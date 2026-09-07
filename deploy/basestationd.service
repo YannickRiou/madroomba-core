@@ -1,0 +1,13 @@
+[Unit]
+Description=MadRoomba docking station daemon (camera + presence)
+After=network.target
+
+[Service]
+ExecStart=/home/pi/basestationd -listen :8081
+Restart=on-failure
+RestartSec=5
+User=pi
+SupplementaryGroups=video
+
+[Install]
+WantedBy=multi-user.target
