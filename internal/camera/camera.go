@@ -40,6 +40,24 @@ type Streamer struct {
 	subs   map[chan []byte]struct{}
 	latest []byte
 	cmd    *exec.Cmd
+	done   chan struct{} // closed when readLoop ends
+}
+
+// waitFirstFrame reports whether a frame arrived before the process ended
+// or the timeout elapsed.
+func (s *Streamer) waitFirstFrame(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s.Latest() != nil {
+			return true
+		}
+		select {
+		case <-s.done:
+			return s.Latest() != nil
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	return false
 }
 
 // Start launches the first available camera CLI. If command is non-empty it
@@ -64,8 +82,15 @@ func Start(command []string, width, height, fps int) (*Streamer, error) {
 		if err := cmd.Start(); err != nil {
 			continue
 		}
-		s := &Streamer{subs: make(map[chan []byte]struct{}), cmd: cmd}
+		s := &Streamer{subs: make(map[chan []byte]struct{}), cmd: cmd, done: make(chan struct{})}
 		go s.readLoop(stdout)
+		// A CLI can exist yet see no camera (libcamera-vid on a legacy
+		// camera stack): require a first frame, else try the next one.
+		if !s.waitFirstFrame(8 * time.Second) {
+			log.Printf("camera: %s produced no frames, trying next", c[0])
+			s.Stop()
+			continue
+		}
 		log.Printf("camera: streaming via %s", c[0])
 		return s, nil
 	}
@@ -75,6 +100,7 @@ func Start(command []string, width, height, fps int) (*Streamer, error) {
 // readLoop splits the raw MJPEG byte stream into JPEG frames
 // (0xFFD8 ... 0xFFD9) and fans them out.
 func (s *Streamer) readLoop(r io.Reader) {
+	defer close(s.done)
 	br := bufio.NewReaderSize(r, 1<<16)
 	var frame []byte
 	inFrame := false

@@ -10,8 +10,11 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 )
+
+const logKeep = 200 // log lines kept for late joiners
 
 //go:embed ui
 var uiFS embed.FS
@@ -41,6 +44,7 @@ type Server struct {
 	subs   map[chan event]struct{}
 	last   map[string][]byte // last payload per event name, replayed on connect
 	hasCam bool
+	logs   []string
 }
 
 type event struct {
@@ -75,6 +79,28 @@ func (s *Server) Publish(name string, payload interface{}) {
 	}
 }
 
+// Write makes the server a log sink (log.SetOutput): lines are kept in a
+// small ring and pushed live to the UI console as "log" events. It must not
+// log itself.
+func (s *Server) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		data, _ := json.Marshal(line)
+		s.mu.Lock()
+		s.logs = append(s.logs, line)
+		if len(s.logs) > logKeep {
+			s.logs = s.logs[len(s.logs)-logKeep:]
+		}
+		for ch := range s.subs {
+			select {
+			case ch <- event{"log", data}:
+			default: // slow client: drop
+			}
+		}
+		s.mu.Unlock()
+	}
+	return len(p), nil
+}
+
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
@@ -93,6 +119,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for name, data := range s.last {
 		replay = append(replay, event{name, data})
 	}
+	hist, _ := json.Marshal(s.logs)
+	replay = append(replay, event{"logs", hist})
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()

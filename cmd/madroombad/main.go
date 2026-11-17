@@ -7,8 +7,10 @@ package main
 
 import (
 	"flag"
+	"io"
 	"log"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +54,10 @@ func (s simScanner) ReadScan() (*lidar.Scan, error) {
 func main() {
 	flag.Parse()
 
+	// Created first so the UI console also shows the startup logs.
+	srv := server.New()
+	log.SetOutput(io.MultiWriter(os.Stderr, srv))
+
 	var (
 		driver  robot.Driver
 		scanner scanSource
@@ -75,14 +81,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("madroombad: roomba init: %v", err)
 		}
-		dev, err := lidar.Open(*lidarPort)
-		if err != nil {
-			log.Fatalf("madroombad: lidar init: %v", err)
+		if dev, err := lidar.Open(*lidarPort); err != nil {
+			log.Printf("madroombad: lidar init: %v (continuing without lidar)", err)
+		} else if err := dev.Start(); err != nil {
+			log.Printf("madroombad: lidar start: %v (continuing without lidar)", err)
+		} else {
+			scanner = dev
 		}
-		if err := dev.Start(); err != nil {
-			log.Fatalf("madroombad: lidar start: %v", err)
-		}
-		scanner = dev
 	}
 	defer driver.Close()
 
@@ -90,7 +95,6 @@ func main() {
 	grid := mapping.NewGrid(cells, cells, *cellMM/1000)
 	tracker := &odom.Tracker{}
 
-	srv := server.New()
 	srv.MapPNG = func() []byte {
 		png, _ := grid.ToPNG()
 		return png
@@ -188,6 +192,9 @@ func main() {
 
 	// --- lidar → normalization → scan matching → map ---
 	go func() {
+		if scanner == nil {
+			return // no lidar: UI/teleop/camera only
+		}
 		for {
 			raw, err := scanner.ReadScan()
 			if err != nil {

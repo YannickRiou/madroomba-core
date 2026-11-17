@@ -34,7 +34,7 @@ color:var(--color-navy);margin:0;display:flex;flex-direction:column;min-height:1
 header{background:var(--color-navy);color:var(--color-white);padding:10px 18px}
 h1{font-family:'Funnel Display',sans-serif;font-size:20px;margin:0}
 main{flex:1;padding:16px;display:flex;gap:16px;flex-wrap:wrap}
-img{max-width:640px;width:100%;border-radius:12px;background:#000}
+img{max-width:640px;width:100%;height:auto;align-self:flex-start;border-radius:12px;background:#000}
 .card{background:var(--color-water-green);border-radius:12px;padding:14px;min-width:220px}
 .card b{color:var(--color-pine)}
 #motion{display:inline-block;padding:2px 10px;border-radius:10px;font-weight:700;

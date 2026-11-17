@@ -51,6 +51,9 @@
   .sw{display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:3px; vertical-align:middle}
   #conn{font-size:12px; padding:2px 8px; border-radius:10px; background:var(--color-chartreuse); color:var(--color-navy); font-weight:700}
   #conn.off{background:#c33; color:#fff}
+  #logbox{background:var(--color-navy); color:var(--color-white); padding:4px 18px; font-size:11px}
+  #logbox summary{cursor:pointer; font-weight:700; color:var(--color-chartreuse)}
+  #log{font:11px/1.35 ui-monospace, Consolas, monospace; max-height:110px; overflow-y:auto; white-space:pre-wrap; margin-top:4px}
   footer{padding:6px 18px; font-size:11px; color:var(--color-pine); background:var(--color-water-green)}
 </style>
 </head>
@@ -105,6 +108,7 @@
     </div>
   </div>
 </main>
+<details id="logbox" open><summary>Console</summary><pre id="log"></pre></details>
 <footer>MadRoomba — Roomba 500 + Raspberry Pi Zero + HLS-LFCD-LDS2 · cartographie temps réel</footer>
 <script>
 "use strict";
@@ -124,7 +128,11 @@ window.addEventListener('resize', resize);
 
 function draw(){
   requestAnimationFrame(draw);
-  if (cv.width === 0) resize();
+  // Re-sync the bitmap whenever the layout size changes (window resize, but
+  // also the console being opened/closed), otherwise the map is stretched.
+  const r = cv.getBoundingClientRect();
+  if (cv.width === 0 || Math.abs(cv.width - r.width * devicePixelRatio) > 1 ||
+      Math.abs(cv.height - r.height * devicePixelRatio) > 1) resize();
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle = '#fff';
   ctx.fillRect(0,0,cv.width,cv.height);
@@ -169,6 +177,15 @@ const conn = document.getElementById('conn');
 const es = new EventSource('/api/events');
 es.onopen  = () => { conn.textContent = 'connecté'; conn.classList.remove('off'); };
 es.onerror = () => { conn.textContent = 'hors ligne'; conn.classList.add('off'); };
+const logEl = document.getElementById('log');
+function addLogs(lines){
+  const stick = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 4;
+  for (const l of lines) logEl.append(l + '\n');
+  while (logEl.childNodes.length > 300) logEl.firstChild.remove();
+  if (stick) logEl.scrollTop = logEl.scrollHeight;
+}
+es.addEventListener('logs', e => { logEl.textContent = ''; addLogs(JSON.parse(e.data) || []); });
+es.addEventListener('log', e => addLogs([JSON.parse(e.data)]));
 es.addEventListener('state', e => {
   state = JSON.parse(e.data);
   const p = state.pose;
