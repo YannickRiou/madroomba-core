@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MadRoomba</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#0e1116; --surface:#161b22; --surface2:#1f2630; --border:#2b3441;
+  --text:#e6edf3; --muted:#8b98a8; --accent:#2dd4bf; --accent-ink:#04201c;
+  --warn:#f5a524; --danger:#f0616d; --ok:#3fb950;
+}
+*{box-sizing:border-box; margin:0}
+[hidden]{display:none !important}
+html,body{height:100%}
+body{font-family:Inter, system-ui, -apple-system, "Segoe UI", sans-serif; font-size:13.5px; background:var(--bg); color:var(--text); display:flex; flex-direction:column; min-height:100vh}
+
+/* header */
+header{display:flex; align-items:center; flex-wrap:wrap; gap:8px 16px; padding:9px 16px; background:var(--surface); border-bottom:1px solid var(--border)}
+.brand{display:flex; align-items:center; gap:9px; font-weight:700; font-size:16px}
+.brand i{width:11px; height:11px; border-radius:50%; background:var(--accent); box-shadow:0 0 12px var(--accent)}
+.chips{display:flex; gap:6px; flex-wrap:wrap; margin-left:auto}
+.chip{display:inline-flex; align-items:center; gap:7px; padding:4px 11px; border-radius:999px; font-size:12px; font-weight:600; background:var(--surface2); border:1px solid var(--border); color:var(--muted); white-space:nowrap}
+.chip::before{content:""; width:7px; height:7px; border-radius:50%; background:var(--muted)}
+.chip.ok::before{background:var(--ok)} .chip.warn::before{background:var(--warn)} .chip.bad::before{background:var(--danger)}
+.chip.ok, .chip.warn, .chip.bad{color:var(--text)}
+.chip.plain::before{display:none}
+.chip.sep{margin-left:10px}
+#battbar{width:44px; height:6px; border-radius:3px; background:var(--border); overflow:hidden}
+#battfill{display:block; height:100%; width:0; background:var(--accent)}
+
+/* layout: fills the viewport on desktop, stacks (and scrolls) on small screens */
+main{flex:1; min-height:0; display:grid; grid-template-columns:minmax(0,1fr) 250px 350px; gap:12px; padding:12px 16px}
+main.no-robot{grid-template-columns:minmax(0,1fr)}
+main.no-base{grid-template-columns:minmax(0,1fr) 250px}
+.col{display:flex; flex-direction:column; gap:12px; min-width:0; min-height:0}
+.card{background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px; min-height:0}
+.card h2{font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:9px; font-weight:700; display:flex; justify-content:space-between; align-items:center; gap:8px}
+.card h2 label{text-transform:none; letter-spacing:0; font-weight:600}
+.grow{flex:1}
+@media (min-width:981px) and (min-height:600px){ body{height:100vh; overflow:hidden} }
+@media (max-width:980px){
+  main, main.no-robot, main.no-base{grid-template-columns:1fr}
+  #cv{height:50vh}
+}
+
+/* controls */
+button, .btn{font:inherit; font-weight:600; cursor:pointer; text-decoration:none; padding:7px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface2); color:var(--text); display:inline-block}
+button:hover, .btn:hover{border-color:var(--accent)}
+button.primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
+button.primary:hover{filter:brightness(1.08)}
+button.ghost{background:transparent; color:var(--muted)}
+.toolbar{display:flex; gap:6px; flex-wrap:wrap; margin-top:9px}
+input[type=range]{width:100%; accent-color:var(--accent)}
+input[type=checkbox]{accent-color:var(--accent); width:15px; height:15px}
+select{font:inherit; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:5px 8px; width:100%}
+label{color:var(--muted); font-size:12.5px}
+.hint{color:var(--muted); font-size:12px; line-height:1.45; margin-top:8px}
+
+/* map (+ robot camera picture-in-picture) */
+#maparea{display:flex; flex-direction:column; padding:10px; position:relative}
+#maparea h2{margin-bottom:8px}
+.mapwrap{position:relative; flex:1; min-height:0}
+#cv{position:absolute; inset:0; width:100%; height:100%; border-radius:9px; background:#10151c; touch-action:none; display:block}
+@media (max-width:980px){ .mapwrap{height:50vh; flex:none} }
+.pip{position:absolute; right:10px; bottom:10px; width:min(34%, 260px); aspect-ratio:4/3; border-radius:10px; overflow:hidden; border:2px solid var(--accent); background:#000; box-shadow:0 6px 24px rgba(0,0,0,.5)}
+.pip img{width:100%; height:100%; object-fit:cover; display:block}
+.pip small{position:absolute; left:6px; top:5px; font-size:10.5px; font-weight:700; color:#fff; background:rgba(0,0,0,.55); padding:1px 6px; border-radius:6px}
+.maptools{display:flex; flex-wrap:wrap; align-items:center; gap:6px 14px; margin-top:8px; font-size:11.5px; color:var(--muted)}
+.maptools .sw{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; vertical-align:middle}
+.maptools .right{margin-left:auto; display:flex; align-items:center; gap:10px}
+.maptools input[type=range]{width:90px}
+.maptools label{display:flex; align-items:center; gap:5px}
+
+/* teleop */
+#pad{display:grid; grid-template-columns:repeat(3,1fr); gap:7px}
+#pad button{font-size:19px; padding:11px 0; user-select:none; touch-action:none}
+#pad button:active{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+#stopbtn{background:var(--danger) !important; border-color:var(--danger) !important; color:#1c0508 !important}
+.speed{margin-top:11px}
+.speed label{display:flex; justify-content:space-between}
+.actions{display:grid; grid-template-columns:1fr 1fr; gap:7px}
+.actions button{padding:9px 6px; font-size:12.5px}
+.actions .wide{grid-column:1/-1}
+
+/* base */
+.viewer{position:relative; background:#000; border-radius:9px; overflow:hidden; aspect-ratio:4/3}
+/* The camera's last pixel column is almost white (sensor artifact in the stream itself).
+   Scaling the image 1.2% from the left edge pushes that column outside the clipped frame. */
+.viewer img, .pip img, .gallery img{transform:scale(1.012); transform-origin:0 50%}
+.viewer img{width:100%; height:100%; object-fit:contain; display:block}
+.viewer .off{position:absolute; inset:0; display:grid; place-items:center; color:var(--muted); font-size:13px}
+.dock{display:flex; align-items:center; gap:10px; margin-bottom:9px}
+.dock .big{font-size:18px; font-weight:700}
+.dock .dot{width:12px; height:12px; border-radius:50%; background:var(--muted)}
+.dock.docked .dot{background:var(--ok); box-shadow:0 0 10px var(--ok)}
+.dock.empty .dot{background:var(--warn); box-shadow:0 0 10px var(--warn)}
+.tabsbar{display:flex; gap:4px; margin-bottom:10px}
+.tabsbar button{padding:5px 11px; font-size:12px; border-radius:999px; background:transparent; color:var(--muted)}
+.tabsbar button.on{background:var(--surface2); color:var(--text); border-color:var(--accent)}
+.panel{flex:1; min-height:0; overflow-y:auto; padding-right:2px}
+dl{display:grid; grid-template-columns:auto 1fr; gap:8px 14px}
+dt{color:var(--muted)} dd{text-align:right; font-variant-numeric:tabular-nums; font-weight:600}
+.row{display:grid; grid-template-columns:84px 1fr 34px; align-items:center; gap:8px; margin:7px 0}
+.row.sel{grid-template-columns:84px 1fr}
+.row output{font-variant-numeric:tabular-nums; text-align:right; font-size:12.5px}
+.checks{display:flex; gap:14px; margin:8px 0 10px; flex-wrap:wrap}
+.checks label{display:flex; align-items:center; gap:6px; cursor:pointer}
+.gallery{display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:8px}
+.shot{position:relative}
+.gallery a{display:block; position:relative; border-radius:7px; overflow:hidden; border:1px solid var(--border); background:#000}
+.shot .del{position:absolute; top:4px; right:4px; width:22px; height:22px; padding:0; border:none; border-radius:50%; background:rgba(0,0,0,.7); color:#fff; font-size:14px; line-height:22px; text-align:center; opacity:0; z-index:1}
+.shot:hover .del, .shot .del:focus{opacity:1}
+.shot .del:hover{background:var(--danger); color:#1c0508}
+@media (hover:none){ .shot .del{opacity:1} }
+.gallery img{width:100%; aspect-ratio:4/3; object-fit:cover; display:block}
+.gallery span{position:absolute; left:0; right:0; bottom:0; padding:10px 5px 3px; font-size:10.5px; color:#fff; background:linear-gradient(transparent, rgba(0,0,0,.8))}
+
+/* console: a one-line bar showing the last log, expands upward */
+#console{background:var(--surface); border-top:1px solid var(--border); padding:6px 16px}
+#console > summary{cursor:pointer; list-style:none; display:flex; align-items:center; gap:10px; font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden}
+#console > summary::-webkit-details-marker{display:none}
+#console > summary b{text-transform:uppercase; letter-spacing:1px; font-size:11px}
+#lastlog{overflow:hidden; text-overflow:ellipsis; font:11.5px ui-monospace, Consolas, monospace; color:#b6c2d1; min-width:0}
+.tabs{display:inline-flex; gap:5px}
+.tabs button{padding:2px 9px; font-size:11.5px; border-radius:999px}
+.tabs button.on{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
+.log{margin-top:6px; font:11.5px/1.4 ui-monospace, Consolas, monospace; height:120px; overflow-y:auto; white-space:pre-wrap; color:#b6c2d1}
+#toast{position:fixed; bottom:48px; left:50%; transform:translateX(-50%); background:var(--surface2); border:1px solid var(--accent); padding:8px 15px; border-radius:10px; opacity:0; transition:opacity .2s; pointer-events:none; z-index:9}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><i></i>MadRoomba</div>
+  <div class="chips">
+    <span class="chip" id="chip-robot" data-side="robot">Robot · …</span>
+    <span class="chip plain" id="chip-batt" data-side="robot">Batterie <span id="battbar"><span id="battfill"></span></span> <b id="batt">—</b></span>
+    <span class="chip plain" id="chip-pose" data-side="robot">Pose <b id="pose">—</b></span>
+    <span class="chip plain" id="chip-lidar" data-side="robot">Lidar <b id="rpm">—</b></span>
+    <span class="chip sep" id="chip-base" data-side="base">Base · …</span>
+    <span class="chip" id="chip-motion" data-side="base">Activité · —</span>
+    <span class="chip" id="chip-dock" data-side="base">Dock · —</span>
+  </div>
+</header>
+
+<main id="main">
+  <!-- ROBOT: map (+ camera PiP) -->
+  <div class="col" id="col-map" data-side="robot">
+    <section class="card grow" id="maparea">
+      <h2><span>Robot · carte <span id="mode" style="color:var(--warn)"></span></span>
+        <label><input type="checkbox" id="robotcamtoggle"> caméra du robot</label></h2>
+      <div class="mapwrap">
+        <canvas id="cv"></canvas>
+        <div class="pip" id="pip" hidden><img id="robotcam" alt="Caméra du robot"><small>Robot</small></div>
+      </div>
+      <div class="maptools">
+        <span><span class="sw" style="background:#2b2f36"></span>obstacle</span>
+        <span><span class="sw" style="background:#fff;border:1px solid #888"></span>libre</span>
+        <span><span class="sw" style="background:#9aa0aa"></span>inconnu</span>
+        <span><span class="sw" style="background:#f43f5e"></span>scan</span>
+        <span><span class="sw" style="background:#14b8a6"></span>robot</span>
+        <span class="right">
+          <label>zoom <input id="zoom" type="range" min="15" max="120" value="45"></label>
+          <label><input type="checkbox" id="follow" checked> suivre</label>
+        </span>
+      </div>
+    </section>
+  </div>
+
+  <!-- ROBOT: controls -->
+  <div class="col" id="col-ctl" data-side="robot">
+    <section class="card">
+      <h2>Téléopération <small style="text-transform:none;letter-spacing:0">ZQSD · flèches</small></h2>
+      <div id="pad">
+        <span></span><button data-k="f">▲</button><span></span>
+        <button data-k="l">◀</button><button id="stopbtn" data-k="stop">■</button><button data-k="r">▶</button>
+        <span></span><button data-k="b">▼</button><span></span>
+      </div>
+      <div class="speed">
+        <label>Vitesse <b id="speedval" style="color:var(--text)">200 mm/s</b></label>
+        <input type="range" id="speed" min="100" max="400" step="25" value="200">
+      </div>
+    </section>
+    <section class="card">
+      <h2>Actions</h2>
+      <div class="actions">
+        <button data-cmd="clean" class="primary wide">Nettoyage auto</button>
+        <button data-cmd="dock">Retour base</button>
+        <button data-cmd="safe">Reprendre</button>
+        <button data-cmd="reset_pose">Reset pose</button>
+        <button data-cmd="reset_map">Reset carte</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- BASE -->
+  <div class="col" id="col-base" data-side="base">
+    <section class="card">
+      <h2>Base · caméra du dock</h2>
+      <div class="viewer"><img id="basecam" alt="Caméra du dock"><div class="off" id="basecam-off" hidden>Base hors ligne</div></div>
+      <div class="toolbar">
+        <button class="primary" id="snap">Capturer</button>
+        <a class="btn" id="dl" target="_blank" rel="noopener">Télécharger</a>
+        <a class="btn" id="fs" target="_blank" rel="noopener">Plein écran</a>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Présence du robot</h2>
+      <div class="dock" id="dock"><span class="dot"></span><span class="big" id="dock-label">—</span></div>
+      <div class="toolbar" style="margin-top:0">
+        <button id="learn-docked">Robot sur la base</button>
+        <button id="learn-empty">Base vide</button>
+        <button class="ghost" id="learn-reset">Effacer</button>
+      </div>
+      <p class="hint" id="dock-hint"></p>
+    </section>
+
+    <section class="card grow" style="display:flex; flex-direction:column">
+      <div class="tabsbar" id="basetabs">
+        <button class="on" data-tab="snaps">Captures <span id="snapcount"></span></button>
+        <button data-tab="settings">Réglages</button>
+        <button data-tab="info">Infos</button>
+      </div>
+      <div class="panel" id="tab-snaps">
+        <div class="toolbar" style="margin:0 0 9px"><button class="ghost" id="snap-clear">Tout supprimer</button></div>
+        <div class="gallery" id="gallery"></div>
+        <p class="hint" id="gallery-empty">Aucune capture. Elles sont prises à chaque mouvement détecté et sur demande.</p>
+      </div>
+      <div class="panel" id="tab-settings" hidden>
+        <div class="row"><label for="brightness">Luminosité</label><input type="range" id="brightness" min="0" max="100"><output id="o-brightness"></output></div>
+        <div class="row"><label for="contrast">Contraste</label><input type="range" id="contrast" min="-100" max="100"><output id="o-contrast"></output></div>
+        <div class="row"><label for="saturation">Saturation</label><input type="range" id="saturation" min="-100" max="100"><output id="o-saturation"></output></div>
+        <div class="row sel"><label for="awb">Blancs</label><select id="awb"></select></div>
+        <div class="row sel"><label for="exposure">Exposition</label><select id="exposure"></select></div>
+        <div class="checks">
+          <label><input type="checkbox" id="hflip"> Miroir</label>
+          <label><input type="checkbox" id="vflip"> Retourner</label>
+        </div>
+        <div class="toolbar" style="margin-top:0">
+          <button class="primary" id="apply">Appliquer</button>
+          <button class="ghost" id="defaults">Par défaut</button>
+        </div>
+        <p class="hint">Appliquer redémarre la caméra (1 à 2 s). Réglages conservés au redémarrage.</p>
+      </div>
+      <div class="panel" id="tab-info" hidden>
+        <dl>
+          <dt>Activité</dt><dd id="motion">—</dd>
+          <dt>Score</dt><dd id="score">—</dd>
+          <dt>Dernière activité</dt><dd id="last">jamais</dd>
+          <dt>Uptime base</dt><dd id="uptime">—</dd>
+        </dl>
+      </div>
+    </section>
+  </div>
+</main>
+
+<details id="console">
+  <summary><b>Console</b>
+    <span class="tabs"><button class="on" data-log="robot">Robot</button><button data-log="base">Base</button></span>
+    <span id="lastlog"></span>
+  </summary>
+  <pre class="log" id="log"></pre>
+</details>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2400);
+}
+function setChip(id, text, cls){ const el = $(id); el.textContent = text; el.className = 'chip ' + (cls || ''); }
+
+let R = null, B = null;           // URL of the robot and base daemons ('' = this origin, null = not configured)
+const logs = {robot: [], base: []};
+let logTab = 'robot';
+const logEl = $('log');
+function renderLog(){
+  const lines = logs[logTab];
+  $('lastlog').textContent = lines.length ? lines[lines.length - 1] : '';
+  if (!$('console').open) return;
+  const stick = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 4;
+  logEl.textContent = lines.join('\n');
+  if (stick) logEl.scrollTop = logEl.scrollHeight;
+}
+$('console').addEventListener('toggle', renderLog);
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = e => {
+  e.preventDefault(); logTab = b.dataset.log;
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  renderLog();
+});
+
+// base column tabs
+document.querySelectorAll('#basetabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#basetabs button').forEach(x => x.classList.toggle('on', x === b));
+  for (const t of ['snaps', 'settings', 'info']) $('tab-' + t).hidden = (t !== b.dataset.tab);
+});
+
+fetch('/api/config').then(r => r.json()).then(cfg => {
+  R = cfg.robot; B = cfg.base;
+  const hide = side => document.querySelectorAll('[data-side=' + side + ']').forEach(e => e.hidden = true);
+  if (R === null){ hide('robot'); $('main').classList.add('no-robot'); logTab = 'base'; }
+  if (B === null){ hide('base'); $('main').classList.add('no-base'); }
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x.dataset.log === logTab));
+  if (R !== null) initRobot();
+  if (B !== null) initBase();
+});
+
+/* ====================== ROBOT ====================== */
+function initRobot(){
+  const cv = $('cv'), ctx = cv.getContext('2d');
+  let state = null, mapImg = null, mapMeta = null, ppm = 45;
+  $('zoom').oninput = e => { ppm = +e.target.value; };
+
+  function resize(){
+    const r = cv.getBoundingClientRect();
+    cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio;
+  }
+  window.addEventListener('resize', resize);
+
+  function draw(){
+    requestAnimationFrame(draw);
+    // re-sync the bitmap whenever the layout size changes, else the map is stretched
+    const r = cv.getBoundingClientRect();
+    if (cv.width === 0 || Math.abs(cv.width - r.width * devicePixelRatio) > 1 ||
+        Math.abs(cv.height - r.height * devicePixelRatio) > 1) resize();
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.fillStyle = '#10151c'; ctx.fillRect(0,0,cv.width,cv.height);
+    const c = ($('follow').checked && state) ? state.pose : {x:0, y:0};
+    const s = ppm * devicePixelRatio;
+    const w2c = (x,y) => [cv.width/2 + (x-c.x)*s, cv.height/2 - (y-c.y)*s];
+    if (mapImg && mapMeta){
+      const extW = mapMeta.w * mapMeta.cell, extH = mapMeta.h * mapMeta.cell;
+      const [ix, iy] = w2c(-extW/2, extH/2);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(mapImg, ix, iy, extW*s, extH*s);
+    }
+    if (state){
+      const p = state.pose;
+      ctx.fillStyle = '#f43f5e';
+      for (let d = 0; d < 360; d++){
+        const rr = state.scan[d]; if (!rr) continue;
+        const a = p.th + d*Math.PI/180;
+        const [x,y] = w2c(p.x + rr*Math.cos(a), p.y + rr*Math.sin(a));
+        ctx.fillRect(x-1.5, y-1.5, 3, 3);
+      }
+      const [rx,ry] = w2c(p.x, p.y);
+      ctx.strokeStyle = '#14b8a6'; ctx.fillStyle = 'rgba(20,184,166,0.3)';
+      ctx.lineWidth = 2*devicePixelRatio;
+      ctx.beginPath(); ctx.arc(rx, ry, 0.17*s, 0, 2*Math.PI); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(rx, ry);
+      ctx.lineTo(rx + 0.22*s*Math.cos(p.th), ry - 0.22*s*Math.sin(p.th)); ctx.stroke();
+    }
+  }
+  resize(); draw();
+
+  // telemetry (SSE)
+  const es = new EventSource(R + '/api/events');
+  setChip('chip-robot', 'Robot · connexion…', '');
+  es.onopen  = () => setChip('chip-robot', 'Robot · connecté', 'ok');
+  es.onerror = () => setChip('chip-robot', 'Robot · hors ligne', 'bad');
+  es.addEventListener('logs', e => { logs.robot = JSON.parse(e.data) || []; if (logTab === 'robot') renderLog(); });
+  es.addEventListener('log', e => {
+    logs.robot.push(JSON.parse(e.data)); if (logs.robot.length > 300) logs.robot.shift();
+    if (logTab === 'robot') renderLog();
+  });
+  es.addEventListener('state', e => {
+    state = JSON.parse(e.data);
+    const p = state.pose;
+    $('pose').textContent = p.x.toFixed(2)+', '+p.y.toFixed(2)+' m · '+(p.th*180/Math.PI).toFixed(0)+'°';
+    $('rpm').textContent = state.rpm ? state.rpm.toFixed(0)+' rpm' : 'absent';
+    $('mode').textContent = state.sim ? '· simulation' : '';
+    const b = state.batt;
+    if (b && b.capacity_mah){
+      const pct = Math.round(100*b.charge_mah/b.capacity_mah);
+      $('batt').textContent = pct+'% · '+(b.voltage_mv/1000).toFixed(1)+' V';
+      $('battfill').style.width = pct+'%';
+    }
+  });
+  es.addEventListener('map', e => {
+    const m = JSON.parse(e.data), img = new Image();
+    img.onload = () => { mapImg = img; mapMeta = m; };
+    img.src = 'data:image/png;base64,' + m.png;
+  });
+
+  // teleop
+  const keys = new Set(); let lastSent = '';
+  $('speed').oninput = e => { $('speedval').textContent = e.target.value + ' mm/s'; };
+  function wheels(){
+    const v = +$('speed').value, t = Math.round(v*0.6);
+    const f = keys.has('f'), b = keys.has('b'), l = keys.has('l'), r = keys.has('r');
+    let L = 0, Rr = 0;
+    if (f && !b){ L = v; Rr = v; } else if (b && !f){ L = -v; Rr = -v; }
+    if (l && !r){ if (f||b){ L = Math.round(L*0.35); } else { L = -t; Rr = t; } }
+    else if (r && !l){ if (f||b){ Rr = Math.round(Rr*0.35); } else { L = t; Rr = -t; } }
+    return {left: L, right: Rr};
+  }
+  function sendDrive(force){
+    const j = JSON.stringify(wheels());
+    if (!force && j === lastSent) return;
+    lastSent = j;
+    fetch(R + '/api/drive', {method:'POST', body:j}).catch(()=>{});
+  }
+  setInterval(() => { if (lastSent && lastSent !== '{"left":0,"right":0}') sendDrive(true); }, 400); // feeds the dead-man timer
+  const keymap = {z:'f', w:'f', arrowup:'f', s:'b', arrowdown:'b', q:'l', a:'l', arrowleft:'l', d:'r', arrowright:'r'};
+  const typing = e => /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== 'range' && e.target.type !== 'checkbox';
+  window.addEventListener('keydown', e => {
+    const k = keymap[e.key.toLowerCase()]; if (!k || typing(e)) return;
+    e.preventDefault(); if (!keys.has(k)){ keys.add(k); sendDrive(); }
+  });
+  window.addEventListener('keyup', e => { const k = keymap[e.key.toLowerCase()]; if (!k) return; keys.delete(k); sendDrive(); });
+  window.addEventListener('blur', () => { keys.clear(); sendDrive(); });
+  document.querySelectorAll('#pad button').forEach(btn => {
+    const k = btn.dataset.k;
+    if (k === 'stop'){ btn.onclick = () => { keys.clear(); sendDrive(); cmd('stop'); }; return; }
+    btn.addEventListener('pointerdown', e => { e.preventDefault(); keys.add(k); sendDrive(); });
+    ['pointerup','pointerleave','pointercancel'].forEach(ev => btn.addEventListener(ev, () => { keys.delete(k); sendDrive(); }));
+  });
+  function cmd(action){ fetch(R + '/api/cmd', {method:'POST', body: JSON.stringify({action})}).catch(()=>{}); }
+  document.querySelectorAll('.actions button').forEach(b => b.onclick = () => cmd(b.dataset.cmd));
+
+  // robot camera (picture-in-picture over the map)
+  const cam = $('robotcam');
+  $('robotcamtoggle').onchange = e => {
+    $('pip').hidden = !e.target.checked;
+    if (e.target.checked) cam.src = R + '/camera'; else cam.removeAttribute('src');
+  };
+  cam.onerror = () => { $('pip').hidden = true; $('robotcamtoggle').checked = false; toast('Caméra du robot indisponible'); };
+}
+
+/* ====================== BASE ====================== */
+function initBase(){
+  const AWB = ['auto','off','sun','cloud','shade','tungsten','fluorescent','incandescent','flash','horizon'];
+  const EXP = ['auto','night','nightpreview','backlight','spotlight','sports','snow','beach','verylong','fixedfps','antishake','fireworks'];
+  const DEFAULTS = {brightness:50, contrast:0, saturation:0, awb:'auto', exposure:'auto', hflip:false, vflip:false};
+  for (const [id, list] of [['awb', AWB], ['exposure', EXP]]) $(id).innerHTML = list.map(v => `<option>${v}</option>`).join('');
+  const api = (path, opt) => fetch(B + path, opt);
+  async function post(path, body){
+    const r = await api(path, {method:'POST', body});
+    if (!r.ok) throw new Error((await r.text()).trim() || r.status);
+    return r;
+  }
+  $('dl').href = B + '/api/snapshot.jpg?download=1';
+  $('fs').href = B + '/camera';
+
+  // camera image (reloads itself when the stream restarts or the base comes back)
+  const img = $('basecam');
+  function loadCam(){ img.src = B + '/camera?t=' + Date.now(); }
+  img.onerror = () => setTimeout(loadCam, 2000);
+  loadCam();
+
+  // status
+  let online = null;
+  async function refreshStatus(){
+    try {
+      const s = await (await api('/api/status')).json();
+      if (online !== true){ online = true; $('basecam-off').hidden = true; setChip('chip-base', 'Base · en ligne', 'ok'); }
+      setChip('chip-motion', 'Activité · ' + (s.motion ? 'mouvement' : 'calme'), s.motion ? 'warn' : 'ok');
+      $('motion').textContent = s.motion ? 'mouvement' : 'calme';
+      $('score').textContent = s.score.toFixed(2);
+      $('last').textContent = s.last_motion || 'jamais';
+      $('uptime').textContent = s.uptime;
+      const d = s.dock, st = d.state;
+      $('dock-label').textContent = {docked:'Robot sur la base', empty:'Base vide', unknown:'À calibrer'}[st];
+      $('dock').className = 'dock ' + st;
+      setChip('chip-dock', 'Dock · ' + {docked:'robot présent', empty:'vide', unknown:'à calibrer'}[st], st === 'docked' ? 'ok' : st === 'empty' ? 'warn' : '');
+      $('dock-hint').textContent = st === 'unknown'
+        ? "Robot sur la base : cliquez « Robot sur la base ». Puis retirez-le et cliquez « Base vide »."
+        : 'Écart · sur la base : ' + (d.has_docked ? d.d_docked.toFixed(1) : '—') + ' · vide : ' + (d.has_empty ? d.d_empty.toFixed(1) : '—');
+    } catch (e) {
+      if (online !== false){ online = false; $('basecam-off').hidden = false; setChip('chip-base', 'Base · hors ligne', 'bad'); setChip('chip-motion', 'Activité · —', ''); setChip('chip-dock', 'Dock · —', ''); }
+    }
+  }
+  setInterval(refreshStatus, 1000); refreshStatus();
+
+  // dock learning
+  const learn = (url, msg) => () => post(url).then(() => toast(msg)).catch(e => toast(e.message));
+  $('learn-docked').onclick = learn('/api/dock/learn?state=docked', 'Référence « robot sur la base » enregistrée');
+  $('learn-empty').onclick  = learn('/api/dock/learn?state=empty', 'Référence « base vide » enregistrée');
+  $('learn-reset').onclick  = learn('/api/dock/reset', 'Références effacées');
+
+  // snapshots
+  function snapLabel(n){
+    const m = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)-(\w+)\.jpg$/.exec(n);
+    return m ? `${m[3]}/${m[2]} ${m[4]}:${m[5]} · ${m[7] === 'motion' ? 'mouvement' : 'manuelle'}` : n;
+  }
+  async function refreshSnaps(){
+    try {
+      const names = await (await api('/api/snaps')).json() || [];
+      $('snapcount').textContent = names.length ? '(' + names.length + ')' : '';
+      $('gallery-empty').hidden = names.length > 0;
+      $('snap-clear').hidden = names.length === 0;
+      $('gallery').innerHTML = names.slice(0, 24).map(n =>
+        `<div class="shot"><a href="${B}/snaps/${n}" target="_blank" rel="noopener"><img src="${B}/snaps/${n}" alt=""><span>${snapLabel(n)}</span></a>` +
+        `<button class="del" data-name="${n}" title="Supprimer cette capture">×</button></div>`).join('');
+    } catch (e) {}
+  }
+  $('gallery').addEventListener('click', e => {
+    const b = e.target.closest('.del'); if (!b) return;
+    post('/api/snaps/delete?name=' + encodeURIComponent(b.dataset.name))
+      .then(() => { toast('Capture supprimée'); refreshSnaps(); }).catch(err => toast(err.message));
+  });
+  $('snap-clear').onclick = () => {
+    if (!confirm('Supprimer toutes les captures de la base ?')) return;
+    post('/api/snaps/delete?all=1').then(() => { toast('Captures supprimées'); refreshSnaps(); }).catch(err => toast(err.message));
+  };
+  $('snap').onclick = () => post('/api/snap').then(() => { toast('Capture enregistrée'); refreshSnaps(); }).catch(e => toast(e.message));
+  setInterval(refreshSnaps, 10000); refreshSnaps();
+
+  // camera settings
+  const SL = ['brightness', 'contrast', 'saturation'];
+  function showSettings(s){
+    for (const k of SL){ $(k).value = s[k]; $('o-' + k).textContent = s[k]; }
+    $('awb').value = s.awb; $('exposure').value = s.exposure; $('hflip').checked = s.hflip; $('vflip').checked = s.vflip;
+  }
+  for (const k of SL) $(k).oninput = () => { $('o-' + k).textContent = $(k).value; };
+  async function applySettings(s){
+    try {
+      const r = await post('/api/camera/settings', JSON.stringify(s));
+      showSettings(await r.json()); toast('Réglages appliqués'); setTimeout(loadCam, 800);
+    } catch (e) { toast('Échec : ' + e.message); }
+  }
+  $('apply').onclick = () => applySettings({brightness:+$('brightness').value, contrast:+$('contrast').value, saturation:+$('saturation').value,
+    awb:$('awb').value, exposure:$('exposure').value, hflip:$('hflip').checked, vflip:$('vflip').checked});
+  $('defaults').onclick = () => { showSettings(DEFAULTS); applySettings(DEFAULTS); };
+  api('/api/camera/settings').then(r => r.json()).then(showSettings).catch(() => {});
+
+  // base logs are polled (always, so the console bar shows the last line)
+  async function refreshLog(){
+    try { logs.base = await (await api('/api/logs')).json() || []; if (logTab === 'base') renderLog(); } catch (e) {}
+  }
+  setInterval(refreshLog, 2000); refreshLog();
+}
+</script>
+</body>
+</html>

@@ -35,6 +35,7 @@ var (
 	cellMM      = flag.Float64("cell-mm", 50, "map cell size in millimeters")
 	scanMatch   = flag.Bool("scanmatch", true, "correct odometry drift by matching scans against the map")
 	brcGPIO     = flag.Int("brc-gpio", -1, "GPIO (BCM) wired to the Roomba BRC pin for wake-up, -1 to disable")
+	baseURL     = flag.String("base-url", "", "dock daemon URL shown in the UI, e.g. http://madserver:8081 (empty = hidden)")
 	cameraCmd   = flag.String("camera", "auto", "camera command: 'auto', 'off', or a custom command line emitting MJPEG on stdout")
 )
 
@@ -56,6 +57,7 @@ func main() {
 
 	// Created first so the UI console also shows the startup logs.
 	srv := server.New()
+	srv.BaseURL = strings.TrimRight(*baseURL, "/")
 	log.SetOutput(io.MultiWriter(os.Stderr, srv))
 
 	var (

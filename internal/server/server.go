@@ -4,20 +4,17 @@
 package server
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/YannickRiou/madroomba-core/internal/ui"
 )
 
 const logKeep = 200 // log lines kept for late joiners
-
-//go:embed ui
-var uiFS embed.FS
 
 // Command is a UI action forwarded to the daemon.
 type Command struct {
@@ -39,6 +36,9 @@ type Server struct {
 	// MapPNG, if non-nil, returns the current occupancy grid as PNG for
 	// GET /api/map.png (handy for scripts and archiving).
 	MapPNG func() []byte
+	// BaseURL, if set, is where the shared page finds the dock daemon
+	// (basestationd), e.g. "http://madserver:8081".
+	BaseURL string
 
 	mu     sync.Mutex
 	subs   map[chan event]struct{}
@@ -186,11 +186,16 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Run(addr string) error {
 	mux := http.NewServeMux()
 
-	ui, err := fs.Sub(uiFS, "ui")
-	if err != nil {
-		return err
+	self := ""
+	var base *string
+	if s.BaseURL != "" {
+		if err := ui.Proxy(mux, "/proxy/base", s.BaseURL); err != nil {
+			return err
+		}
+		p := "/proxy/base"
+		base = &p
 	}
-	mux.Handle("/", http.FileServer(http.FS(ui)))
+	ui.Mount(mux, &self, base)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/drive", s.handleDrive)
 	mux.HandleFunc("/api/cmd", s.handleCommand)
