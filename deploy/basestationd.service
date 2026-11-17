@@ -3,7 +3,7 @@ Description=MadRoomba docking station daemon (camera + presence)
 After=network.target
 
 [Service]
-ExecStart=/home/pi/basestationd -listen :8081
+ExecStart=/home/pi/basestationd -listen :8081 -robot-url http://192.168.1.95:8080
 Restart=on-failure
 RestartSec=5
 User=pi

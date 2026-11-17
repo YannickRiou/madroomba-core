@@ -19,7 +19,8 @@ import (
 
 // candidateCommands lists known Pi camera CLIs, newest first, with the
 // arguments that make them emit raw MJPEG on stdout.
-func candidateCommands(width, height, fps int) [][]string {
+// extra holds raspivid-only tuning flags (brightness, flip, ...).
+func candidateCommands(width, height, fps int, extra []string) [][]string {
 	std := func(name string) []string {
 		return []string{name, "-t", "0", "--codec", "mjpeg",
 			"--width", fmt.Sprint(width), "--height", fmt.Sprint(height),
@@ -28,9 +29,9 @@ func candidateCommands(width, height, fps int) [][]string {
 	return [][]string{
 		std("rpicam-vid"),
 		std("libcamera-vid"),
-		{"raspivid", "-t", "0", "-cd", "MJPEG",
+		append([]string{"raspivid", "-t", "0", "-cd", "MJPEG",
 			"-w", fmt.Sprint(width), "-h", fmt.Sprint(height),
-			"-fps", fmt.Sprint(fps), "-n", "-o", "-"},
+			"-fps", fmt.Sprint(fps), "-n", "-o", "-"}, extra...),
 	}
 }
 
@@ -63,11 +64,17 @@ func (s *Streamer) waitFirstFrame(timeout time.Duration) bool {
 // Start launches the first available camera CLI. If command is non-empty it
 // is used as-is (split on spaces) instead of autodetecting.
 func Start(command []string, width, height, fps int) (*Streamer, error) {
+	return StartWithArgs(command, width, height, fps, nil)
+}
+
+// StartWithArgs is Start plus raspivid-only tuning flags (see
+// candidateCommands); ignored when command is set or raspivid isn't used.
+func StartWithArgs(command []string, width, height, fps int, extra []string) (*Streamer, error) {
 	var candidates [][]string
 	if len(command) > 0 {
 		candidates = [][]string{command}
 	} else {
-		candidates = candidateCommands(width, height, fps)
+		candidates = candidateCommands(width, height, fps, extra)
 	}
 	for _, c := range candidates {
 		if _, err := exec.LookPath(c[0]); err != nil {
@@ -150,6 +157,7 @@ func (s *Streamer) Latest() []byte {
 func (s *Streamer) Stop() {
 	if s.cmd != nil && s.cmd.Process != nil {
 		s.cmd.Process.Kill()
+		go s.cmd.Wait() // reap the child so restarts don't leave zombies
 	}
 }
 
@@ -170,6 +178,8 @@ func (s *Streamer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-s.done: // camera process ended or was restarted
 			return
 		case frame := <-ch:
 			fmt.Fprintf(w, "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", len(frame))
@@ -231,11 +241,51 @@ func (m *MotionDetector) Feed(frame []byte) (bool, error) {
 	return false, nil
 }
 
+// Reset forgets the previous frame and the last motion time.
+func (m *MotionDetector) Reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.prev, m.Score, m.LastMotion = nil, 0, time.Time{}
+}
+
 // Status returns the last score and motion time under lock.
 func (m *MotionDetector) Status() (score float64, last time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.Score, m.LastMotion
+}
+
+// GrayGrid decodes a JPEG into the detector's coarse grayscale grid.
+func GrayGrid(frame []byte) ([]float64, error) {
+	img, err := jpeg.Decode(bytes.NewReader(frame))
+	if err != nil {
+		return nil, err
+	}
+	return downscaleGray(img), nil
+}
+
+// GridDistance is the mean absolute difference between two grids after
+// removing each one's mean, so it is insensitive to global brightness.
+func GridDistance(a, b []float64) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var ma, mb float64
+	for i := range a {
+		ma += a[i]
+		mb += b[i]
+	}
+	ma /= float64(len(a))
+	mb /= float64(len(b))
+	var sum float64
+	for i := range a {
+		d := (a[i] - ma) - (b[i] - mb)
+		if d < 0 {
+			d = -d
+		}
+		sum += d
+	}
+	return sum / float64(len(a))
 }
 
 func downscaleGray(img image.Image) []float64 {
