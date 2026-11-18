@@ -191,6 +191,7 @@ dt{color:var(--muted)} dd{text-align:right; font-variant-numeric:tabular-nums; f
         <button data-cmd="safe">Reprendre</button>
         <button data-cmd="reset_pose">Reset pose</button>
         <button data-cmd="reset_map">Reset carte</button>
+        <button data-cmd="restart" class="wide">Relancer le service</button>
       </div>
     </section>
   </div>
@@ -421,7 +422,10 @@ function initRobot(){
     ['pointerup','pointerleave','pointercancel'].forEach(ev => btn.addEventListener(ev, () => { keys.delete(k); sendDrive(); }));
   });
   function cmd(action){ fetch(R + '/api/cmd', {method:'POST', body: JSON.stringify({action})}).catch(()=>{}); }
-  document.querySelectorAll('.actions button').forEach(b => b.onclick = () => cmd(b.dataset.cmd));
+  document.querySelectorAll('.actions button').forEach(b => b.onclick = () => {
+    if (b.dataset.cmd === 'restart' && !confirm('Relancer madroombad ? Le robot s\'arrête et revient en 5 à 10 s.')) return;
+    cmd(b.dataset.cmd);
+  });
 
   // robot camera (picture-in-picture over the map)
   const cam = $('robotcam');

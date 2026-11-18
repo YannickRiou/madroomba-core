@@ -83,13 +83,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("madroombad: roomba init: %v", err)
 		}
-		if dev, err := lidar.Open(*lidarPort); err != nil {
-			log.Printf("madroombad: lidar init: %v (continuing without lidar)", err)
-		} else if err := dev.Start(); err != nil {
-			log.Printf("madroombad: lidar start: %v (continuing without lidar)", err)
-		} else {
-			scanner = dev
-		}
+		// The lidar is opened by its own goroutine below, with retries.
 	}
 	defer driver.Close()
 
@@ -163,6 +157,15 @@ func main() {
 		case "reset_pose":
 			tracker.Reset()
 			return nil
+		case "restart":
+			// Stop the wheels, let the HTTP reply go out, then exit non-zero
+			// so that systemd (Restart=on-failure) starts a fresh daemon.
+			driver.SetWheels(0, 0)
+			go func() {
+				time.Sleep(300 * time.Millisecond)
+				os.Exit(1)
+			}()
+			return nil
 		}
 		return nil
 	}
@@ -195,7 +198,7 @@ func main() {
 	// --- lidar → normalization → scan matching → map ---
 	go func() {
 		if scanner == nil {
-			return // no lidar: UI/teleop/camera only
+			scanner = openLidar(*lidarPort)
 		}
 		for {
 			raw, err := scanner.ReadScan()
@@ -262,6 +265,26 @@ func main() {
 	}()
 
 	log.Fatal(srv.Run(*listen))
+}
+
+// openLidar keeps trying until the lidar opens and starts. At boot the daemon
+// can start before udev has given /dev/ttyUSB0 to the dialout group, so a
+// single attempt fails with "permission denied" and the lidar stays off.
+func openLidar(port string) *lidar.Device {
+	for warned := false; ; time.Sleep(5 * time.Second) {
+		dev, err := lidar.Open(port)
+		if err == nil {
+			if err = dev.Start(); err == nil {
+				log.Printf("madroombad: lidar started on %s", port)
+				return dev
+			}
+			dev.Close()
+		}
+		if !warned {
+			log.Printf("madroombad: lidar: %v (retrying every 5s)", err)
+			warned = true
+		}
+	}
 }
 
 // normalizeScan converts a raw sensor-frame scan to the robot frame

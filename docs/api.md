@@ -19,7 +19,7 @@ There is no authentication: run this on a trusted network only.
 |---|---|
 | `GET /api/events` | Server-Sent Events. Events: `state` (about 5 Hz: pose, 360-value scan, battery, lidar rpm, sim flag), `map` (about every 2 s: base64 PNG and geometry), `logs` (full log history, sent once on connect, JSON array), `log` (one new log line, JSON string). The last `state` and `map` are replayed on connect |
 | `POST /api/drive` | Body `{"left": mm_s, "right": mm_s}`, each from -500 to 500. The robot stops by itself after 1 s without a command, so keep sending while moving |
-| `POST /api/cmd` | Body `{"action": "stop" \| "clean" \| "dock" \| "safe" \| "reset_map" \| "reset_pose"}` |
+| `POST /api/cmd` | Body `{"action": "stop" \| "clean" \| "dock" \| "safe" \| "reset_map" \| "reset_pose" \| "restart"}`. `restart` stops the wheels and exits the daemon with code 1, so systemd (`Restart=on-failure`) starts it again after about 5 s |
 | `GET /api/map.png` | Snapshot of the occupancy grid |
 | `GET /camera` | MJPEG stream (`multipart/x-mixed-replace`), `503` if there is no camera |
 
