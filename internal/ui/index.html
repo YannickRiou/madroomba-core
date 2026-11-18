@@ -659,13 +659,26 @@ function initRobot(){
         const [x,y] = w2c(p.x + rr*Math.cos(a), p.y + rr*Math.sin(a));
         ctx.fillRect(x-1.5, y-1.5, 3, 3);
       }
-      const [rx,ry] = w2c(p.x, p.y);
-      ctx.strokeStyle = '#2dd4bf'; ctx.fillStyle = 'rgba(45,212,191,0.22)';
-      ctx.lineWidth = 2*devicePixelRatio;
-      ctx.beginPath(); ctx.arc(rx, ry, 0.17*s, 0, 2*Math.PI); ctx.fill(); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(rx, ry);
-      ctx.lineTo(rx + 0.22*s*Math.cos(p.th), ry - 0.22*s*Math.sin(p.th)); ctx.stroke();
+      drawRobot(...w2c(p.x, p.y), p.th, s);
     }
+  }
+
+  // drawRobot draws the robot seen from above: a solid body with a dark
+  // halo, the front bumper as an accent arc and a heading arrow inside.
+  // It keeps a minimum size on screen so it stays readable when zoomed out.
+  function drawRobot(x, y, th, s){
+    const px = devicePixelRatio, r = Math.max(0.17 * s, 9 * px);
+    ctx.save();
+    ctx.translate(x, y); ctx.rotate(-th); // canvas y points down: +x is the robot's front
+    ctx.fillStyle = 'rgba(15,15,16,0.7)'; // halo over scan points and heatmap
+    ctx.beginPath(); ctx.arc(0, 0, r + 2.5 * px, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = '#232325'; ctx.strokeStyle = 'rgba(237,237,237,0.35)'; ctx.lineWidth = px;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#2dd4bf'; ctx.lineWidth = Math.max(2.5 * px, r * 0.18); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(0, 0, r - ctx.lineWidth / 2, -1.2, 1.2); ctx.stroke();
+    ctx.fillStyle = '#2dd4bf';
+    ctx.beginPath(); ctx.moveTo(r * 0.5, 0); ctx.lineTo(-r * 0.3, r * 0.36); ctx.lineTo(-r * 0.12, 0); ctx.lineTo(-r * 0.3, -r * 0.36); ctx.closePath(); ctx.fill();
+    ctx.restore();
   }
   resize(); draw();
 
