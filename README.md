@@ -90,7 +90,7 @@ the flag, that half of the page is hidden.
 | `-listen` | `:8080` | HTTP address |
 | `-sim` | off | Use the simulator instead of hardware |
 | `-roomba-port` | `/dev/serial0` | Roomba SCI serial port |
-| `-lidar-port` | `/dev/ttyUSB0` | LDS-01 serial port. If it cannot be opened the daemon keeps running without lidar |
+| `-lidar-port` | `auto` | LDS-01 serial port. `auto` takes the first `/dev/ttyUSB*` or `/dev/ttyACM*`, looked up again at each attempt. The daemon retries every 5 s, and reopens the port after a USB disconnect, without stopping the rest |
 | `-lidar-yaw`, `-lidar-invert` | `0`, `true` | Lidar mounting offset (degrees) and rotation direction |
 | `-map-size`, `-cell-mm` | `20`, `50` | Map edge (m) and cell size (mm) |
 | `-scanmatch` | on | Correct odometry drift against the map |

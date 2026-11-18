@@ -6,11 +6,13 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"log"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +30,7 @@ var (
 	listen      = flag.String("listen", ":8080", "HTTP listen address")
 	simMode     = flag.Bool("sim", false, "run against the built-in simulator (no hardware)")
 	roombaPort  = flag.String("roomba-port", "/dev/serial0", "Roomba SCI serial port")
-	lidarPort   = flag.String("lidar-port", "/dev/ttyUSB0", "LDS-01 serial port")
+	lidarPort   = flag.String("lidar-port", "auto", "LDS-01 serial port, or 'auto' for the first /dev/ttyUSB* or /dev/ttyACM*")
 	lidarYawDeg = flag.Float64("lidar-yaw", 0, "lidar mounting yaw offset in degrees (0 = lidar 0° facing robot front)")
 	lidarInvert = flag.Bool("lidar-invert", true, "invert lidar rotation direction (LDS-01 spins clockwise)")
 	mapSizeM    = flag.Float64("map-size", 20, "map edge length in meters")
@@ -160,7 +162,10 @@ func main() {
 		case "restart":
 			// Stop the wheels, let the HTTP reply go out, then exit non-zero
 			// so that systemd (Restart=on-failure) starts a fresh daemon.
-			driver.SetWheels(0, 0)
+			// SetWheels runs on its own: it waits for the OI lock, which a
+			// read stuck on a silent Roomba never releases, and the exit
+			// must happen anyway.
+			go driver.SetWheels(0, 0)
 			go func() {
 				time.Sleep(300 * time.Millisecond)
 				os.Exit(1)
@@ -204,7 +209,14 @@ func main() {
 			raw, err := scanner.ReadScan()
 			if err != nil {
 				log.Printf("madroombad: lidar: %v", err)
-				time.Sleep(time.Second)
+				// A USB disconnect leaves a dead port that returns EOF
+				// forever: close it and wait for the adapter to come back.
+				if dev, ok := scanner.(*lidar.Device); ok {
+					dev.Close()
+					scanner = openLidar(*lidarPort)
+				} else {
+					time.Sleep(time.Second)
+				}
 				continue
 			}
 			scan := normalizeScan(raw, *lidarYawDeg, *lidarInvert && !*simMode)
@@ -272,19 +284,37 @@ func main() {
 // single attempt fails with "permission denied" and the lidar stays off.
 func openLidar(port string) *lidar.Device {
 	for warned := false; ; time.Sleep(5 * time.Second) {
-		dev, err := lidar.Open(port)
+		name, err := lidarDevice(port)
 		if err == nil {
-			if err = dev.Start(); err == nil {
-				log.Printf("madroombad: lidar started on %s", port)
-				return dev
+			var dev *lidar.Device
+			if dev, err = lidar.Open(name); err == nil {
+				if err = dev.Start(); err == nil {
+					log.Printf("madroombad: lidar started on %s", name)
+					return dev
+				}
+				dev.Close()
 			}
-			dev.Close()
 		}
 		if !warned {
 			log.Printf("madroombad: lidar: %v (retrying every 5s)", err)
 			warned = true
 		}
 	}
+}
+
+// lidarDevice resolves the -lidar-port flag. "auto" looks for a USB serial
+// adapter at every attempt: after a USB disconnect the adapter can come back
+// as ttyUSB1 while the old ttyUSB0 is still held open.
+func lidarDevice(port string) (string, error) {
+	if port != "auto" {
+		return port, nil
+	}
+	for _, pattern := range []string{"/dev/ttyUSB*", "/dev/ttyACM*"} {
+		if m, _ := filepath.Glob(pattern); len(m) > 0 {
+			return m[0], nil
+		}
+	}
+	return "", errors.New("no USB serial adapter found (/dev/ttyUSB*, /dev/ttyACM*)")
 }
 
 // normalizeScan converts a raw sensor-frame scan to the robot frame

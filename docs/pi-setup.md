@@ -82,7 +82,8 @@ sudo systemctl restart madroombad
 | Symptom | Likely cause and fix |
 |---|---|
 | Robot service restarts every 5 s, log says `open /dev/serial0: no such file` | UART not enabled, see "Robot Pi: serial port" |
-| Log says `lidar init ... (continuing without lidar)` | No lidar on `/dev/ttyUSB0`. The page, teleoperation and camera still work; the map stays empty. Plug the lidar or fix `-lidar-port` |
+| Log says `lidar: ... (retrying every 5s)` | No USB serial adapter found, or it cannot be opened. The page, teleoperation and camera still work; the map stays empty. The lidar is picked up as soon as it is plugged in. Set `-lidar-port` if `auto` picks the wrong device |
+| Log says `lidar started` but the page shows 0 RPM | The port is open but no frame arrives. Check the lidar cable and that the adapter shares its ground with the Pi |
 | Camera tile empty, log says `no usable camera command found` | Camera not detected, see "Camera" |
 | Dock page shows motion right after a restart | Normal for a few seconds while the exposure settles; analysis is paused for 6 s after each camera start |
 | "Robot hors ligne" on the base page | The robot daemon is down or `-robot-url` is wrong. Check `curl http://<base>:8081/proxy/robot/api/config` |
