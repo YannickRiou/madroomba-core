@@ -19,6 +19,50 @@ two quote characters (use `-N ''` and check with `ssh-keygen -y -P '' -f <key>`)
 and piping a file through `type` can leave carriage returns in
 `authorized_keys`, hence the `tr -d '\r'`.
 
+Without `-i`, ssh only tries the default key names (`id_rsa`,
+`id_ed25519`...). Map each Pi to its key in `~/.ssh/config`, so that plain
+`ssh madroomba` or `ssh madserver` works:
+
+```
+Host madroomba madroomba.local
+    User pi
+    IdentityFile ~/.ssh/id_ed25519_madroomba
+    IdentitiesOnly yes
+
+Host madserver madserver.local
+    User pi
+    IdentityFile ~/.ssh/id_ed25519_madserver
+    IdentitiesOnly yes
+```
+
+WSL has its own `~/.ssh`, separate from the Windows one. ssh refuses a
+private key readable by others ("UNPROTECTED PRIVATE KEY FILE"): run
+`chmod 600` on the private keys and the config, `chmod 644` on the `.pub`.
+
+### Key login only
+
+Once key login works, turn off password login on each Pi, one at a time.
+Keep an SSH session open during the change, to undo it if needed:
+
+```sh
+sudo tee /etc/ssh/sshd_config.d/10-keys-only.conf <<'EOF'
+# Key login only: no passwords, no root
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+EOF
+sudo sshd -t && sudo sshd -T | grep -Ei 'passwordauth|kbdinteractive|permitroot'
+sudo systemctl reload ssh
+```
+
+The `10-` prefix matters: sshd keeps the first value it reads, and some
+images ship a `50-cloud-init.conf` that sets `PasswordAuthentication yes`.
+From another terminal,
+`ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password pi@<host>`
+must now fail with `Permission denied (publickey)`, and `ssh <host>` must
+still log in. To undo: remove the file and reload ssh. The `pi` password is
+still used by `sudo` and the local console.
+
 ## Robot Pi: serial port
 
 The Roomba is on the hardware UART, which must be free of the login console and
