@@ -230,12 +230,22 @@ type Meta struct {
 }
 
 // ToPNG renders the grid as a grayscale PNG: unknown = mid gray,
-// free = white, occupied = black.
-func (g *Grid) ToPNG() ([]byte, Meta) {
+// free = white, occupied = black. Raw, the gray level follows the
+// confidence of each cell; filtered, only confident cells are shown and
+// isolated obstacles are dropped (see classes).
+func (g *Grid) ToPNG(filter bool) ([]byte, Meta) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	img := image.NewGray(image.Rect(0, 0, g.W, g.H))
+	if filter {
+		for i, c := range g.classes(true) {
+			img.Pix[i] = map[int8]uint8{cellFree: 255, cellUnknown: 190, cellOccupied: 40}[c]
+		}
+		var buf bytes.Buffer
+		png.Encode(&buf, img)
+		return buf.Bytes(), Meta{W: g.W, H: g.H, CellM: g.CellM, Updates: g.updates}
+	}
 	for i, v := range g.cells {
 		var y uint8
 		switch {

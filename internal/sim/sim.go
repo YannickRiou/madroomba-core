@@ -168,6 +168,7 @@ func (r *Robot) Scan() *lidar.Scan {
 
 // --- robot.Driver implementation ---
 
+// SetWheels sets the wheel speeds in mm/s.
 func (r *Robot) SetWheels(leftMM, rightMM int16) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -176,16 +177,20 @@ func (r *Robot) SetWheels(leftMM, rightMM int16) error {
 	return nil
 }
 
-func (r *Robot) Odometry() (int16, int16, error) {
+// Odometry quantizes like the real encoders (about 0.44 mm per count) and
+// keeps the remainders so quantization doesn't bias the estimate.
+func (r *Robot) Odometry() (float64, float64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	distMM := math.Trunc(r.accDistM * 1000)
-	angDeg := math.Trunc(r.accThetaRd * 180 / math.Pi)
-	r.accDistM -= distMM / 1000
-	r.accThetaRd -= angDeg * math.Pi / 180
-	return int16(distMM), int16(angDeg), nil
+	const step = 0.000444
+	d := math.Trunc(r.accDistM/step) * step
+	a := math.Trunc(r.accThetaRd/(step/wheelBaseM)) * (step / wheelBaseM)
+	r.accDistM -= d
+	r.accThetaRd -= a
+	return d, a, nil
 }
 
+// Battery reports a fixed, partly charged battery.
 func (r *Robot) Battery() (robot.Battery, error) {
 	return robot.Battery{
 		ChargeMAh:   2100,
@@ -197,7 +202,27 @@ func (r *Robot) Battery() (robot.Battery, error) {
 	}, nil
 }
 
-func (r *Robot) Clean() error      { return nil }
-func (r *Robot) Dock() error       { return nil }
-func (r *Robot) Reactivate() error { return nil }
-func (r *Robot) Close() error      { return nil }
+// Sensors reports a robot in Safe mode with nothing triggered.
+func (r *Robot) Sensors() (robot.Sensors, error) {
+	return robot.Sensors{OIMode: 2}, nil
+}
+
+// The commands below have no effect in the simulator.
+
+func (r *Robot) Clean() error                 { return nil }
+func (r *Robot) Dock() error                  { return nil }
+func (r *Robot) Reactivate() error            { return nil }
+func (r *Robot) SetMotors(robot.Motors) error { return nil }
+func (r *Robot) SetLEDs(robot.LEDs) error     { return nil }
+func (r *Robot) PlaySong([]robot.Note) error  { return nil }
+func (r *Robot) Close() error                 { return nil }
+
+// Action accepts the names in robot.Actions and does nothing.
+func (r *Robot) Action(name string) error {
+	for _, a := range robot.Actions {
+		if a == name {
+			return nil
+		}
+	}
+	return robot.ErrUnknownAction
+}

@@ -1,29 +1,32 @@
 // madroombad is the on-robot daemon: it fuses Roomba odometry and LDS-01
-// lidar scans into an occupancy grid, and serves teleoperation, telemetry
-// and the live map over HTTP.
+// lidar scans into an occupancy grid, and serves teleoperation, telemetry,
+// the live map, saved maps, zones, zone cleaning, the schedule and the
+// battery history over HTTP.
 //
 // Run with -sim to try everything without hardware.
+//
+// Files of this command:
+//
+//	main.go      flags and start-up
+//	app.go       the app struct (shared state) and its construction
+//	control.go   drive, commands, cleaning motors, LEDs and songs
+//	loops.go     background loops: odometry, sensors, battery, lidar, telemetry
+//	lidar.go     lidar port discovery and scan frame conversion
+//	automode.go  smart mode (Safe to drive, Passive on the dock to charge)
+//	eco.go       lidar switch and energy saving on the dock
+//	maps.go      saved maps (ROS format) and their HTTP API
+//	zones.go     zones and zone cleaning HTTP API
+//	schedule.go  weekly schedule
+//	sounds.go    melodies played on events
+//	battery.go   battery history and lifetime counters HTTP API
+//	heat.go      heatmap of passes and incidents
+//	httputil.go  small HTTP helpers
 package main
 
 import (
-	"errors"
 	"flag"
-	"io"
 	"log"
-	"math"
-	"os"
-	"path/filepath"
-	"strings"
-	"sync"
 	"time"
-
-	"github.com/YannickRiou/madroomba-core/internal/camera"
-	"github.com/YannickRiou/madroomba-core/internal/lidar"
-	"github.com/YannickRiou/madroomba-core/internal/mapping"
-	"github.com/YannickRiou/madroomba-core/internal/odom"
-	"github.com/YannickRiou/madroomba-core/internal/robot"
-	"github.com/YannickRiou/madroomba-core/internal/server"
-	"github.com/YannickRiou/madroomba-core/internal/sim"
 )
 
 var (
@@ -39,297 +42,26 @@ var (
 	brcGPIO     = flag.Int("brc-gpio", -1, "GPIO (BCM) wired to the Roomba BRC pin for wake-up, -1 to disable")
 	baseURL     = flag.String("base-url", "", "dock daemon URL shown in the UI, e.g. http://madserver:8081 (empty = hidden)")
 	cameraCmd   = flag.String("camera", "auto", "camera command: 'auto', 'off', or a custom command line emitting MJPEG on stdout")
+	dataDir     = flag.String("data-dir", "/home/pi/madroomba-data", "where maps, zones, schedule, sounds and battery history are kept")
+	wheelBaseMM = flag.Float64("wheel-base-mm", 235, "distance between the drive wheels, used by encoder odometry")
+	autoModeOn  = flag.Bool("auto-mode", true, "take control (Safe) when asked to drive, go back to Passive on the dock when idle so the battery charges")
+	dockAvoidM  = flag.Float64("dock-avoid-m", 0.35, "radius of the no-go disc around the dock for autonomous paths, 0 to disable")
+	batteryMAh  = flag.Float64("battery-mah", 0, "rated capacity of the battery pack for the cycle count, 0 to use the Roomba's own estimate")
+	ecoOnDock   = flag.Bool("eco-on-dock", true, "switch the lidar off while the robot rests on its dock, back on when it is used")
 )
 
-// scanSource abstracts real lidar vs simulator.
-type scanSource interface {
-	ReadScan() (*lidar.Scan, error)
-}
-
-// simScanner paces simulated scans at the real sensor's ~5 Hz.
-type simScanner struct{ r *sim.Robot }
-
-func (s simScanner) ReadScan() (*lidar.Scan, error) {
-	time.Sleep(200 * time.Millisecond)
-	return s.r.Scan(), nil
-}
+// Smart mode timings: idle time before giving the robot back to Passive on
+// the dock, and before leaving Full mode.
+const (
+	idleOnDock = 20 * time.Second
+	idleInFull = time.Minute
+)
 
 func main() {
 	flag.Parse()
-
-	// Created first so the UI console also shows the startup logs.
-	srv := server.New()
-	srv.BaseURL = strings.TrimRight(*baseURL, "/")
-	log.SetOutput(io.MultiWriter(os.Stderr, srv))
-
-	var (
-		driver  robot.Driver
-		scanner scanSource
-	)
-
-	if *simMode {
-		log.Println("madroombad: SIMULATION mode")
-		world := sim.DefaultWorld()
-		bot := sim.NewRobot(world)
-		go func() {
-			tick := time.NewTicker(50 * time.Millisecond)
-			for range tick.C {
-				bot.Step(50 * time.Millisecond)
-			}
-		}()
-		driver = bot
-		scanner = simScanner{bot}
-	} else {
-		var err error
-		driver, err = robot.OpenReal(*roombaPort, *brcGPIO)
-		if err != nil {
-			log.Fatalf("madroombad: roomba init: %v", err)
-		}
-		// The lidar is opened by its own goroutine below, with retries.
-	}
-	defer driver.Close()
-
-	cells := int(*mapSizeM * 1000 / *cellMM)
-	grid := mapping.NewGrid(cells, cells, *cellMM/1000)
-	tracker := &odom.Tracker{}
-
-	srv.MapPNG = func() []byte {
-		png, _ := grid.ToPNG()
-		return png
-	}
-
-	// --- camera (robot's own Pi camera) ---
-	if !*simMode && *cameraCmd != "off" {
-		var custom []string
-		if *cameraCmd != "auto" && *cameraCmd != "" {
-			custom = strings.Fields(*cameraCmd)
-		}
-		if cam, err := camera.Start(custom, 640, 480, 15); err == nil {
-			srv.Camera = cam
-		} else {
-			log.Printf("madroombad: %v (continuing without camera)", err)
-		}
-	}
-
-	// --- shared state for telemetry ---
-	var stateMu sync.Mutex
-	var lastScan *lidar.Scan
-	var lastBatt robot.Battery
-
-	// --- drive, with a dead-man stop if the UI goes silent ---
-	var driveMu sync.Mutex
-	lastDrive := time.Now()
-	moving := false
-	srv.OnDrive = func(d server.DriveRequest) error {
-		driveMu.Lock()
-		lastDrive = time.Now()
-		moving = d.Left != 0 || d.Right != 0
-		driveMu.Unlock()
-		return driver.SetWheels(d.Left, d.Right)
-	}
-	go func() {
-		for range time.Tick(300 * time.Millisecond) {
-			driveMu.Lock()
-			stale := moving && time.Since(lastDrive) > time.Second
-			if stale {
-				moving = false
-			}
-			driveMu.Unlock()
-			if stale {
-				log.Println("madroombad: dead-man stop (no drive command for 1s)")
-				driver.SetWheels(0, 0)
-			}
-		}
-	}()
-
-	srv.OnCommand = func(c server.Command) error {
-		log.Printf("madroombad: command %q", c.Action)
-		switch c.Action {
-		case "stop":
-			return driver.SetWheels(0, 0)
-		case "clean":
-			return driver.Clean()
-		case "dock":
-			return driver.Dock()
-		case "safe":
-			return driver.Reactivate()
-		case "reset_map":
-			grid.Reset()
-			return nil
-		case "reset_pose":
-			tracker.Reset()
-			return nil
-		case "restart":
-			// Stop the wheels, let the HTTP reply go out, then exit non-zero
-			// so that systemd (Restart=on-failure) starts a fresh daemon.
-			// SetWheels runs on its own: it waits for the OI lock, which a
-			// read stuck on a silent Roomba never releases, and the exit
-			// must happen anyway.
-			go driver.SetWheels(0, 0)
-			go func() {
-				time.Sleep(300 * time.Millisecond)
-				os.Exit(1)
-			}()
-			return nil
-		}
-		return nil
-	}
-
-	// --- odometry polling (10 Hz) ---
-	go func() {
-		for range time.Tick(100 * time.Millisecond) {
-			d, a, err := driver.Odometry()
-			if err != nil {
-				log.Printf("madroombad: odometry: %v", err)
-				continue
-			}
-			tracker.Update(d, a)
-		}
-	}()
-
-	// --- battery polling (0.2 Hz) ---
-	go func() {
-		for {
-			b, err := driver.Battery()
-			if err == nil {
-				stateMu.Lock()
-				lastBatt = b
-				stateMu.Unlock()
-			}
-			time.Sleep(5 * time.Second)
-		}
-	}()
-
-	// --- lidar → normalization → scan matching → map ---
-	go func() {
-		if scanner == nil {
-			scanner = openLidar(*lidarPort)
-		}
-		for {
-			raw, err := scanner.ReadScan()
-			if err != nil {
-				log.Printf("madroombad: lidar: %v", err)
-				// A USB disconnect leaves a dead port that returns EOF
-				// forever: close it and wait for the adapter to come back.
-				if dev, ok := scanner.(*lidar.Device); ok {
-					dev.Close()
-					scanner = openLidar(*lidarPort)
-				} else {
-					time.Sleep(time.Second)
-				}
-				continue
-			}
-			scan := normalizeScan(raw, *lidarYawDeg, *lidarInvert && !*simMode)
-
-			pose := tracker.Pose()
-			if *scanMatch {
-				corrected := grid.ScanMatch(pose, scan)
-				if corrected != pose {
-					tracker.Set(corrected)
-					pose = corrected
-				}
-			}
-			grid.IntegrateScan(pose, scan)
-
-			stateMu.Lock()
-			lastScan = scan
-			stateMu.Unlock()
-		}
-	}()
-
-	// --- telemetry publishers ---
-	go func() {
-		for range time.Tick(200 * time.Millisecond) {
-			stateMu.Lock()
-			scan := lastScan
-			batt := lastBatt
-			stateMu.Unlock()
-			p := tracker.Pose()
-
-			ranges := make([]float64, 360)
-			rpm := 0.0
-			if scan != nil {
-				rpm = scan.RPM
-				for i, r := range scan.Ranges {
-					ranges[i] = math.Round(r*1000) / 1000
-				}
-			}
-			srv.Publish("state", map[string]interface{}{
-				"pose": map[string]float64{"x": p.X, "y": p.Y, "th": p.Theta},
-				"scan": ranges,
-				"batt": batt,
-				"rpm":  rpm,
-				"sim":  *simMode,
-			})
-		}
-	}()
-	go func() {
-		for range time.Tick(2 * time.Second) {
-			png, meta := grid.ToPNG()
-			srv.Publish("map", map[string]interface{}{
-				"png":     png, // encoding/json emits []byte as base64
-				"w":       meta.W,
-				"h":       meta.H,
-				"cell":    meta.CellM,
-				"updates": meta.Updates,
-			})
-		}
-	}()
-
-	log.Fatal(srv.Run(*listen))
-}
-
-// openLidar keeps trying until the lidar opens and starts. At boot the daemon
-// can start before udev has given /dev/ttyUSB0 to the dialout group, so a
-// single attempt fails with "permission denied" and the lidar stays off.
-func openLidar(port string) *lidar.Device {
-	for warned := false; ; time.Sleep(5 * time.Second) {
-		name, err := lidarDevice(port)
-		if err == nil {
-			var dev *lidar.Device
-			if dev, err = lidar.Open(name); err == nil {
-				if err = dev.Start(); err == nil {
-					log.Printf("madroombad: lidar started on %s", name)
-					return dev
-				}
-				dev.Close()
-			}
-		}
-		if !warned {
-			log.Printf("madroombad: lidar: %v (retrying every 5s)", err)
-			warned = true
-		}
-	}
-}
-
-// lidarDevice resolves the -lidar-port flag. "auto" looks for a USB serial
-// adapter at every attempt: after a USB disconnect the adapter can come back
-// as ttyUSB1 while the old ttyUSB0 is still held open.
-func lidarDevice(port string) (string, error) {
-	if port != "auto" {
-		return port, nil
-	}
-	for _, pattern := range []string{"/dev/ttyUSB*", "/dev/ttyACM*"} {
-		if m, _ := filepath.Glob(pattern); len(m) > 0 {
-			return m[0], nil
-		}
-	}
-	return "", errors.New("no USB serial adapter found (/dev/ttyUSB*, /dev/ttyACM*)")
-}
-
-// normalizeScan converts a raw sensor-frame scan to the robot frame
-// (0° = front, counter-clockwise positive).
-func normalizeScan(raw *lidar.Scan, yawDeg float64, invert bool) *lidar.Scan {
-	out := &lidar.Scan{RPM: raw.RPM}
-	off := int(math.Round(yawDeg))
-	for deg := 0; deg < 360; deg++ {
-		src := deg
-		if invert {
-			src = (360 - deg) % 360
-		}
-		src = ((src+off)%360 + 360) % 360
-		out.Ranges[deg] = raw.Ranges[src]
-		out.Intensities[deg] = raw.Intensities[src]
-	}
-	return out
+	a := newApp()
+	defer a.driver.Close()
+	a.routes()
+	a.startLoops()
+	log.Fatal(a.srv.Run(*listen))
 }

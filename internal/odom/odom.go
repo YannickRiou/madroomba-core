@@ -34,10 +34,13 @@ type Tracker struct {
 // (packet 19) and angle turned in degrees, CCW positive (packet 20).
 // Uses the midpoint model: translation along the average heading of the arc.
 func (t *Tracker) Update(distanceMM, angleDeg int16) {
+	t.Move(float64(distanceMM)/1000.0, float64(angleDeg)*math.Pi/180.0)
+}
+
+// Move applies one odometry delta in meters and radians (CCW positive).
+func (t *Tracker) Move(d, dth float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	d := float64(distanceMM) / 1000.0
-	dth := float64(angleDeg) * math.Pi / 180.0
 	mid := t.pose.Theta + dth/2
 	t.pose.X += d * math.Cos(mid)
 	t.pose.Y += d * math.Sin(mid)

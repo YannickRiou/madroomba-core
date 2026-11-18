@@ -11,9 +11,13 @@
 //	               intensity uint16 LE,
 //	               distance  uint16 LE (mm),
 //	               reserved  2 bytes
-//	bytes 40-41: checksum (not verified here, like the reference ROS driver)
+//	bytes 40-41: checksum, both bytes equal to 0xFF - (sum of bytes 0-39)
 //
-// Measure j of frame index i is at angle index*6 + j degrees.
+// Measure j of frame index i is at angle index*6 + j degrees. Sources: the
+// ROBOTIS "LDS Basic Specification" (HLS-LFCD2): 5 V, 400 mA (1 A at
+// start), 230400 bps, 120 to 3500 mm, 300 +/- 10 RPM, 1 degree resolution,
+// 'b' begins and 'e' pauses. The checksum formula was checked on frames
+// captured from this robot's lidar.
 package lidar
 
 import (
@@ -121,8 +125,9 @@ func (d *Device) ReadFrame() (*Frame, error) {
 			return nil, err
 		}
 		idx := int(buf[1]) - IndexBase
-		if idx < 0 || idx >= FramesPerScan {
-			// Not a real frame start (0xFA can appear inside data): resync.
+		if idx < 0 || idx >= FramesPerScan || !checksumOK(buf) {
+			// Not a real frame start (0xFA can appear inside data), or a
+			// frame damaged on the line: resync.
 			continue
 		}
 		f := &Frame{
@@ -136,6 +141,17 @@ func (d *Device) ReadFrame() (*Frame, error) {
 		}
 		return f, nil
 	}
+}
+
+// checksumOK tells whether a 42-byte frame carries the checksum of its
+// first 40 bytes (the sensor writes it in byte 40 and again in byte 41).
+func checksumOK(f []byte) bool {
+	sum := 0
+	for _, b := range f[:40] {
+		sum += int(b)
+	}
+	c := byte(0xFF - sum&0xFF)
+	return f[40] == c || f[41] == c
 }
 
 // ReadScan assembles frames into full revolutions. It returns a scan every

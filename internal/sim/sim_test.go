@@ -33,12 +33,12 @@ func TestDriveStraightOdometry(t *testing.T) {
 		r.Step(50 * time.Millisecond)
 	}
 	dist, ang, _ := r.Odometry()
-	// 1 second at 0.2 m/s with 1% noise -> ~200mm.
-	if dist < 150 || dist > 250 {
-		t.Errorf("distance = %dmm, want ~200", dist)
+	// 1 second at 0.2 m/s with 1% noise -> ~0.2 m.
+	if dist < 0.15 || dist > 0.25 {
+		t.Errorf("distance = %.3f m, want ~0.2", dist)
 	}
-	if ang < -3 || ang > 3 {
-		t.Errorf("angle = %d deg, want ~0", ang)
+	if math.Abs(ang) > 0.05 {
+		t.Errorf("angle = %.3f rad, want ~0", ang)
 	}
 	p := r.TruePose()
 	if p.X < 0.15 || p.X > 0.25 {

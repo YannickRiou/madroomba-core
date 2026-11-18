@@ -18,7 +18,7 @@ const logKeep = 200 // log lines kept for late joiners
 
 // Command is a UI action forwarded to the daemon.
 type Command struct {
-	Action string `json:"action"` // stop | clean | dock | safe | reset_map | reset_pose
+	Action string `json:"action"` // see docs/api.md for the list
 }
 
 // DriveRequest carries wheel speeds in mm/s.
@@ -45,6 +45,15 @@ type Server struct {
 	last   map[string][]byte // last payload per event name, replayed on connect
 	hasCam bool
 	logs   []string
+	extra  map[string]http.HandlerFunc
+}
+
+// Handle adds a route served next to the built-in ones. Call before Run.
+func (s *Server) Handle(pattern string, h http.HandlerFunc) {
+	if s.extra == nil {
+		s.extra = make(map[string]http.HandlerFunc)
+	}
+	s.extra[pattern] = h
 }
 
 type event struct {
@@ -207,6 +216,9 @@ func (s *Server) Run(addr string) error {
 		w.Header().Set("Content-Type", "image/png")
 		w.Write(s.MapPNG())
 	})
+	for p, h := range s.extra {
+		mux.HandleFunc(p, h)
+	}
 	mux.HandleFunc("/camera", func(w http.ResponseWriter, r *http.Request) {
 		if s.Camera == nil {
 			http.Error(w, "no camera configured", http.StatusServiceUnavailable)

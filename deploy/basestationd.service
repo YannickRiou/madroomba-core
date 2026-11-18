@@ -3,7 +3,9 @@ Description=MadRoomba docking station daemon (camera + presence)
 After=network.target
 
 [Service]
-ExecStart=/home/pi/basestationd -listen :8081 -robot-url http://192.168.1.95:8080
+# The robot by IP: the daemons are built without cgo, so Go cannot resolve
+# mDNS (.local) names. Reserve this address in the router's DHCP settings.
+ExecStart=/home/pi/basestationd -listen :8081 -robot-url http://192.168.1.95
 Restart=on-failure
 RestartSec=5
 User=pi

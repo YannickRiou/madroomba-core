@@ -26,7 +26,43 @@ func buildFrame(idx int, distMM [6]uint16, intens [6]uint16) []byte {
 		f[off+2] = byte(distMM[j])
 		f[off+3] = byte(distMM[j] >> 8)
 	}
+	sum := 0
+	for _, b := range f[:40] {
+		sum += int(b)
+	}
+	f[40] = byte(0xFF - sum&0xFF)
+	f[41] = f[40]
 	return f
+}
+
+func TestChecksumOnRealFrame(t *testing.T) {
+	// Frame captured from the robot's LDS-01 (index 23, 299.7 RPM, 547 mm).
+	f := []byte{0xfa, 0xb7, 0xb5, 0x0b, 0xde, 0x04, 0x23, 0x02, 0x10, 0x00, 0x26, 0x05, 0x1d, 0x02, 0x10, 0x00,
+		0x32, 0x05, 0x17, 0x02, 0x11, 0x00, 0x05, 0x06, 0x13, 0x02, 0x11, 0x00, 0x01, 0x06, 0x10, 0x02,
+		0x11, 0x00, 0xd3, 0x02, 0xab, 0x01, 0x13, 0x00, 0xcd, 0xcd}
+	if !checksumOK(f) {
+		t.Fatal("real frame rejected")
+	}
+	fr, err := New(&fakePort{bytes.NewReader(f)}).ReadFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fr.Index != 23 || fr.RPM != 299.7 || fr.Ranges[0] != 0.547 || fr.Intensities[0] != 1246 {
+		t.Errorf("decoded %+v", fr)
+	}
+}
+
+func TestCorruptFrameSkipped(t *testing.T) {
+	bad := buildFrame(1, [6]uint16{500}, [6]uint16{})
+	bad[10] ^= 0xFF // damaged on the line
+	good := buildFrame(2, [6]uint16{700}, [6]uint16{})
+	f, err := New(&fakePort{bytes.NewReader(append(bad, good...))}).ReadFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Index != 2 {
+		t.Errorf("got frame %d, want the good frame 2", f.Index)
+	}
 }
 
 func TestReadFrame(t *testing.T) {
