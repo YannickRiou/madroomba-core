@@ -107,7 +107,10 @@ func newApp() *app {
 		log.Printf("madroombad: battery lifetime counters: %v", err)
 	}
 
-	a.auto = &autoMode{driver: a.driver, last: time.Now()}
+	// Nobody used the robot before the daemon started: count it as idle
+	// already, so that on the dock the energy saving switches the lidar off
+	// at once instead of a minute after each start.
+	a.auto = &autoMode{driver: a.driver, last: time.Now().Add(-ecoIdle)}
 	a.auto.set(*autoModeOn)
 	a.lidar = &lidarSwitch{on: true}
 	a.lidar.setEco(*ecoOnDock)
