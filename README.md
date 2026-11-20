@@ -31,13 +31,13 @@ and see the robot and the base side by side.
 | `cmd/madroombad` | Robot daemon. One file per job: `main.go` (flags), `app.go` (shared state), `control.go` (drive, commands, motors, LEDs, songs), `loops.go` (background loops), `lidar.go`, `automode.go` (smart mode), `eco.go` (lidar switch, energy saving), `maps.go`, `zones.go`, `schedule.go`, `sounds.go`, `battery.go`, `heat.go` (heatmap), `httputil.go` |
 | `cmd/basestationd` | Dock daemon: `main.go` (wiring, camera lifecycle, analysis loop), `handlers.go` (HTTP API), `settings.go`, `snaps.go`, `dock.go` |
 | `internal/robot` | `Driver` interface, the Roomba 500 implementation over the Open Interface, song notation |
-| `internal/sim` | Virtual flat (walls, raycast) and a noisy differential robot, for development without hardware |
+| `internal/sim` | Virtual flat (walls, raycast) and a noisy differential robot with a bumper, a dock and a battery, for development without hardware |
 | `internal/lidar` | LDS-01 driver (42-byte frames with checksum, six measurements of 1 degree each) |
 | `internal/odom` | Integration of wheel odometry into a 2D pose |
-| `internal/mapping` | Log-odds occupancy grid, scan matcher, map filter, ROS map files, A* path planner, frontiers |
+| `internal/mapping` | Log-odds occupancy grid, scan matcher, global relocalization, map filter, ROS map files, A* path planner, frontiers, split into rooms |
 | `internal/geom` | Points, polygons and polylines: inside, distance, area |
 | `internal/zones` | Zones to clean, no-go zones and virtual walls: validation, storage, drive checks |
-| `internal/nav` | Autonomous moves: path following, coverage of a zone, zone cleaning and exploration jobs |
+| `internal/nav` | Autonomous moves: path following, coverage of a zone, jobs (cleaning zones in order, driving to a point, exploration), recharge then resume |
 | `internal/battery` | Battery history (7 days) and lifetime counters (cycles, charge sessions) |
 | `internal/heatmap` | Where the robot went (passes per 10 cm cell) and where it had trouble (incidents) |
 | `internal/server` | Robot HTTP server: SSE telemetry, drive and command endpoints, log ring |
@@ -87,11 +87,15 @@ in French. Left to right:
     grid of readouts.
   - **Journal**: the robot and base logs, full height.
 - **Control column**, in tabs:
-  - **Actions**: built-in cleaning cycles, exploration, dock, the OI mode
+  - **Actions**: built-in cleaning cycles, exploration, dock, "Aller à un
+    point" (then a click on the map), "Me localiser" (find the robot on the
+    map from the lidar), the OI mode
     (Passive, Commande = Safe, Full) with smart mode and warnings, cleaning
     motors, the lidar switch and energy saving, power off, daemon restart.
   - **Zones**: draw zones to clean, no-go zones and virtual walls point by
-    point on the map, start cleaning a zone.
+    point on the map, or let "Proposer les pièces" add one zone per room.
+    Click a name to rename it. Start cleaning a zone, or tick several and
+    clean them in the order ticked, with one or two passes.
   - **Planning**: weekly schedule (built-in cycles, exploration or zones).
   - **Son et LED**: play melodies, choose the melody of each event, set the
     LEDs.
@@ -292,6 +296,17 @@ the Internet.
 - **Map files**: the ROS map_server format (trinary PNG + YAML) can be edited
   in any image editor and read by ROS tools. A loaded map puts the robot back
   at the origin, so maps are made starting from the dock.
+- **Relocalization**: a branch and bound search over position and heading,
+  on a pyramid of the map, finds the pose that explains one lidar scan
+  anywhere on the map. It runs on the first scan after a map is loaded,
+  before that scan is integrated, and on "Me localiser". A pose is accepted
+  when at least 60 % of the rays end on an obstacle and no other place
+  explains 90 % as many; otherwise the pose is left alone: move the robot
+  and ask again.
+- **Rooms**: free cells further than 50 cm from any wall are the cores of
+  the rooms, cut apart at doorways; each core grows back over the free
+  space and its outline becomes a zone to clean. Rooms already covered by
+  a zone to clean are not added again.
 - **Zones**: polygons (zones to clean, no-go zones) and polylines (virtual
   walls) in the map frame, saved with each map. Drive commands that would
   bring the robot within its radius of a no-go zone or a wall within the next
@@ -303,7 +318,12 @@ the Internet.
   25 cm in front of the map origin). The zone is swept in lanes 25 cm apart
   along its longer side, sampled every 5 cm and kept at a robot radius from
   its outline. A bumper hit backs off 5 cm and skips the point; a cliff or a
-  wheel drop ends the job.
+  wheel drop ends the job. Several zones are cleaned in the order asked; a
+  second pass sweeps the lanes back.
+- **Recharge then resume**: on a low battery (15 %) a cleaning job drives
+  on the map to 50 cm behind the dock, lets the Roomba do the last
+  approach, waits for 80 %, backs out and goes on at the lane it left. If
+  the dock is not reached in 10 minutes the job fails.
 - **Exploration**: frontier based. The robot drives to the nearest group
   of free cells touching unknown space, while the lidar loop completes the
   map, and gives a frontier up after two tries. It stops when no reachable
