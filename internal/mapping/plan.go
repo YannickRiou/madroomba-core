@@ -20,6 +20,14 @@ const planCellM = 0.10
 // at b; ok is false when b cannot be reached. Cells around a are always
 // passable, so a robot touching a wall can still leave it.
 func (g *Grid) PlanPath(a, b Point, radius float64, blocked func(Point) bool) (path []Point, ok bool) {
+	return g.PlanPathNear(a, b, radius, 0, blocked)
+}
+
+// PlanPathNear is PlanPath for a goal the robot only needs to come within
+// near of: when b itself is too close to an obstacle (a frontier along a
+// wall), the path ends at the free point nearest to b, if one lies within
+// near.
+func (g *Grid) PlanPathNear(a, b Point, radius, near float64, blocked func(Point) bool) (path []Point, ok bool) {
 	g.mu.Lock()
 	k := int(math.Max(1, math.Round(planCellM/g.CellM)))
 	cw, ch := g.W/k, g.H/k
@@ -82,8 +90,25 @@ func (g *Grid) PlanPath(a, b Point, radius float64, blocked func(Point) bool) (p
 			}
 		}
 	}
+	end := b
 	if blockedCell[gy*cw+gx] {
-		return nil, false
+		n, best, bestD := int(math.Ceil(near/res)), -1, math.Inf(1)
+		for dy := -n; dy <= n; dy++ {
+			for dx := -n; dx <= n; dx++ {
+				x, y := gx+dx, gy+dy
+				if x < 0 || y < 0 || x >= cw || y >= ch || blockedCell[y*cw+x] {
+					continue
+				}
+				c := center(x, y)
+				if d := math.Hypot(c.X-b.X, c.Y-b.Y); d <= near && d < bestD {
+					best, bestD = y*cw+x, d
+				}
+			}
+		}
+		if best < 0 {
+			return nil, false
+		}
+		gx, gy, end = best%cw, best/cw, center(best%cw, best/cw)
 	}
 
 	cells := astar(blockedCell, cw, ch, sy*cw+sx, gy*cw+gx)
@@ -126,7 +151,7 @@ func (g *Grid) PlanPath(a, b Point, radius float64, blocked func(Point) bool) (p
 			path = append(path, center(anchor%cw, anchor/cw))
 		}
 	}
-	return append(path, b), true
+	return append(path, end), true
 }
 
 // astar runs A* on an 8-connected grid and returns the cell indexes from

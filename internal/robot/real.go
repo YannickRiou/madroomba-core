@@ -66,6 +66,22 @@ type Real struct {
 	ext            int
 	encInit        bool
 	encLeft, encRt uint16
+	// dirLeft, dirRight are the last commanded direction of each wheel
+	// (+1 or -1): the Roomba 500 encoders count up whichever way the wheel
+	// turns, so a spin in place read as a straight line.
+	dirLeft, dirRight float64
+}
+
+// direction gives the sign of a wheel speed, keeping the previous one when
+// the wheel is told to stop (it still coasts the same way).
+func direction(speed int16, prev float64) float64 {
+	switch {
+	case speed > 0:
+		return 1
+	case speed < 0:
+		return -1
+	}
+	return prev
 }
 
 // OpenReal opens the serial port and puts the robot in Safe mode, waking it
@@ -80,7 +96,7 @@ func OpenReal(port string, brcGPIO int, wheelBaseM float64) (*Real, error) {
 		return nil, fmt.Errorf("opening roomba on %s: %w", port, err)
 	}
 	r := &roomba.Roomba{PortName: port, S: p, StreamPaused: make(chan bool, 1)}
-	rr := &Real{r: r, port: p, brc: brcGPIO, wheelBaseM: wheelBaseM}
+	rr := &Real{r: r, port: p, brc: brcGPIO, wheelBaseM: wheelBaseM, dirLeft: 1, dirRight: 1}
 	if rr.charging() {
 		log.Println("madroombad: on the dock or charger, staying in Passive mode so the battery charges (Mode commande to drive)")
 		return rr, nil
@@ -214,6 +230,7 @@ func (rr *Real) Reactivate() error {
 func (rr *Real) SetWheels(leftMM, rightMM int16) error {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
+	rr.dirLeft, rr.dirRight = direction(leftMM, rr.dirLeft), direction(rightMM, rr.dirRight)
 	return rr.r.DirectDrive(rightMM, leftMM)
 }
 
@@ -241,8 +258,8 @@ func (rr *Real) Odometry() (float64, float64, error) {
 		return 0, 0, err
 	}
 	r, l := binary.BigEndian.Uint16(data[0]), binary.BigEndian.Uint16(data[1])
-	dl := float64(int16(l-rr.encLeft)) * mmPerCount / 1000
-	dr := float64(int16(r-rr.encRt)) * mmPerCount / 1000
+	dl := rr.dirLeft * math.Abs(float64(int16(l-rr.encLeft))) * mmPerCount / 1000
+	dr := rr.dirRight * math.Abs(float64(int16(r-rr.encRt))) * mmPerCount / 1000
 	first := !rr.encInit
 	rr.encLeft, rr.encRt, rr.encInit = l, r, true
 	// First reading, or counters reset by a reboot of the robot: a wheel
@@ -327,6 +344,7 @@ func (rr *Real) Sensors() (Sensors, error) {
 func (rr *Real) Clean() error {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
+	rr.dirLeft, rr.dirRight = 1, 1 // built-in behaviors mostly drive forward
 	return rr.r.Clean()
 }
 
@@ -334,6 +352,7 @@ func (rr *Real) Clean() error {
 func (rr *Real) Dock() error {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
+	rr.dirLeft, rr.dirRight = 1, 1
 	return rr.r.SeekDock()
 }
 

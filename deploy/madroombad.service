@@ -3,7 +3,7 @@ Description=MadRoomba daemon (Roomba + lidar mapping)
 After=network.target
 
 [Service]
-ExecStart=/home/pi/madroombad -roomba-port /dev/serial0 -listen :80 -base-url http://madserver:8081 -battery-mah 12800
+ExecStart=/home/pi/madroombad -roomba-port /dev/serial0 -listen :80 -base-url http://madserver:8081 -battery-mah 12800 -lidar-yaw 180
 Restart=on-failure
 RestartSec=5
 User=pi

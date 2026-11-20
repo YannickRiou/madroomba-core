@@ -34,9 +34,10 @@ type PoseSource interface {
 	Pose() odom.Pose
 }
 
-// Planner finds a path on the map (implemented by *mapping.Grid).
+// Planner finds a path on the map to within near of b (implemented by
+// *mapping.Grid).
 type Planner interface {
-	PlanPath(a, b mapping.Point, radius float64, blocked func(mapping.Point) bool) ([]mapping.Point, bool)
+	PlanPathNear(a, b mapping.Point, radius, near float64, blocked func(mapping.Point) bool) ([]mapping.Point, bool)
 }
 
 // Config holds the tunables of autonomous moves.

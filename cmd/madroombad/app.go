@@ -122,8 +122,14 @@ func newApp() *app {
 	cfg.DockRadius = *dockAvoidM
 	a.cleaner = &nav.Cleaner{
 		Base: a.driver, Pose: a.tracker, Planner: a.grid, Frontiers: a.grid, Cfg: cfg,
-		Blocked:    func(p mapping.Point) bool { return a.zones.Blocked(p, cfg.RobotRadius+cfg.Clearance) },
-		Control:    a.control,
+		Blocked: func(p mapping.Point) bool { return a.zones.Blocked(p, cfg.RobotRadius+cfg.Clearance) },
+		Control: a.control,
+		FullMode: func(on bool) error {
+			if on {
+				return a.driver.Action("full")
+			}
+			return a.driver.Reactivate() // Safe
+		},
 		BatteryLow: a.batteryLow,
 		Event:      a.jobEvent,
 		Publish:    func(s nav.Status) { a.srv.Publish("job", s) },

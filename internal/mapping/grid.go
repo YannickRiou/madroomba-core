@@ -233,18 +233,27 @@ type Meta struct {
 // free = white, occupied = black. Raw, the gray level follows the
 // confidence of each cell; filtered, only confident cells are shown and
 // isolated obstacles are dropped (see classes).
+// The grid is only locked while the pixels are filled: encoding takes most
+// of the time on a Pi Zero and must not hold up the lidar or the planner.
 func (g *Grid) ToPNG(filter bool) ([]byte, Meta) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-
 	img := image.NewGray(image.Rect(0, 0, g.W, g.H))
+	meta := Meta{W: g.W, H: g.H, CellM: g.CellM, Updates: g.updates}
 	if filter {
 		for i, c := range g.classes(true) {
-			img.Pix[i] = map[int8]uint8{cellFree: 255, cellUnknown: 190, cellOccupied: 40}[c]
+			switch c {
+			case cellFree:
+				img.Pix[i] = 255
+			case cellOccupied:
+				img.Pix[i] = 40
+			default:
+				img.Pix[i] = 190
+			}
 		}
+		g.mu.Unlock()
 		var buf bytes.Buffer
 		png.Encode(&buf, img)
-		return buf.Bytes(), Meta{W: g.W, H: g.H, CellM: g.CellM, Updates: g.updates}
+		return buf.Bytes(), meta
 	}
 	for i, v := range g.cells {
 		var y uint8
@@ -260,7 +269,8 @@ func (g *Grid) ToPNG(filter bool) ([]byte, Meta) {
 		}
 		img.Pix[i] = y
 	}
+	g.mu.Unlock()
 	var buf bytes.Buffer
 	png.Encode(&buf, img)
-	return buf.Bytes(), Meta{W: g.W, H: g.H, CellM: g.CellM, Updates: g.updates}
+	return buf.Bytes(), meta
 }

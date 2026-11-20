@@ -169,6 +169,28 @@ func TestPlanPathBlockedAndUnreachable(t *testing.T) {
 	}
 }
 
+func TestPlanPathNearStopsShortOfWall(t *testing.T) {
+	g := NewGrid(100, 100, 0.05)
+	for y := -30; y <= 30; y++ {
+		g.cells[(50-y)*100+60] = 100 // wall at x = 0.5
+	}
+	a, b := Point{X: -1}, Point{X: 0.4} // b is 10 cm from the wall
+	if _, ok := g.PlanPath(a, b, 0.17, nil); ok {
+		t.Fatal("PlanPath reached a goal 10 cm from a wall")
+	}
+	path, ok := g.PlanPathNear(a, b, 0.17, 0.25, nil)
+	if !ok {
+		t.Fatal("no path to within 25 cm of the goal")
+	}
+	last := path[len(path)-1]
+	if d := math.Hypot(last.X-b.X, last.Y-b.Y); d > 0.25 {
+		t.Errorf("path ends %.2f m from the goal, want at most 0.25", d)
+	}
+	if 0.5-last.X < 0.17 {
+		t.Errorf("path ends at %v, closer than the robot radius to the wall", last)
+	}
+}
+
 func TestFrontiers(t *testing.T) {
 	g := NewGrid(40, 40, 0.05)
 	// a free 1 m square around the origin, unknown everywhere else

@@ -69,6 +69,9 @@ type Cleaner struct {
 	Blocked func(mapping.Point) bool
 	// Control puts the robot under control (Safe mode) before moving.
 	Control func() error
+	// FullMode, if set, switches Full mode on (true) or back to Safe
+	// (false), to leave the dock.
+	FullMode func(on bool) error
 	// BatteryLow tells when to stop and go back to the dock.
 	BatteryLow func() bool
 	// Event signals "start", "done" and "stuck" (melodies).
@@ -182,12 +185,25 @@ func (c *Cleaner) begin(ctx context.Context, st Status) error {
 	c.set(st)
 	if s, err := c.Base.Sensors(); err == nil && s.ChargingSources&2 != 0 {
 		// On the dock: back out straight before turning, as the Roomba does.
+		// In Safe mode the Roomba stops after 2 cm (its front cliff sensors
+		// see the dock ramp as a drop): back out in Full mode, then back to
+		// Safe. Reversing loses no safety, the Roomba has no rear cliff sensor.
+		if c.FullMode != nil {
+			if err := c.FullMode(true); err != nil {
+				return err
+			}
+		}
 		c.Base.SetWheels(-150, -150)
 		select {
 		case <-ctx.Done():
 		case <-time.After(2 * time.Second):
 		}
 		c.Base.SetWheels(0, 0)
+		if c.FullMode != nil {
+			if err := c.FullMode(false); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -253,8 +269,8 @@ func (c *Cleaner) run(ctx context.Context, area Area, returnToDock bool) {
 
 // explore drives to the nearest frontier of the map, again and again,
 // while the lidar loop completes the map, until no reachable frontier is
-// left, the time is up or the battery runs low. A frontier tried twice
-// (reached but still unknown behind, or unreachable) is given up.
+// left, the time is up or the battery runs low. A frontier reached twice
+// but still unknown behind is given up, an unreachable one at once.
 func (c *Cleaner) explore(ctx context.Context, returnToDock bool) {
 	st := Status{Kind: KindExplore, State: StateExploring, Name: "exploration"}
 	finish := func(state, msg string) {
@@ -268,6 +284,7 @@ func (c *Cleaner) explore(ctx context.Context, returnToDock bool) {
 	}
 	tries := map[[2]int]int{} // per frontier, on a 25 cm grid
 	key := func(p mapping.Point) [2]int { return [2]int{int(math.Round(p.X * 4)), int(math.Round(p.Y * 4))} }
+	unreachable := 0
 	deadline := time.Now().Add(c.Cfg.ExploreTime)
 	for {
 		if ctx.Err() != nil {
@@ -307,6 +324,11 @@ func (c *Cleaner) explore(ctx context.Context, returnToDock bool) {
 			c.event("stuck")
 			finish(StateFailed, err.Error())
 			return
+		case errors.Is(err, ErrUnreachable):
+			// The robot has not moved: planning again would fail the same
+			// way, and each plan costs a Pi Zero tens of milliseconds.
+			tries[key(target)] = 2
+			unreachable++
 		case err == nil:
 			st.Visited++
 			c.set(st)
@@ -317,8 +339,21 @@ func (c *Cleaner) explore(ctx context.Context, returnToDock bool) {
 			}
 		}
 	}
+	if st.Visited == 0 && unreachable > 0 {
+		// Usually a pose that no longer matches the map: the robot sees
+		// itself walled in. Say so instead of a silent "0 frontiers".
+		p := c.Pose.Pose()
+		finish(StateFailed, fmt.Sprintf("no path to any of %d frontiers from (%.2f, %.2f): pose off the map?", unreachable, p.X, p.Y))
+		if returnToDock {
+			c.Base.Dock()
+		}
+		return
+	}
 	c.event("done")
 	msg := fmt.Sprintf("%d frontiers reached", st.Visited)
+	if unreachable > 0 {
+		msg += fmt.Sprintf(", %d unreachable", unreachable)
+	}
 	if returnToDock {
 		finish(StateDocking, msg)
 		c.Base.Dock()
@@ -332,7 +367,7 @@ func (c *Cleaner) explore(ctx context.Context, returnToDock bool) {
 func (c *Cleaner) goTo(ctx context.Context, target mapping.Point, finalTol float64) error {
 	p := c.Pose.Pose()
 	from := mapping.Point{X: p.X, Y: p.Y}
-	path, ok := c.Planner.PlanPath(from, target, c.Cfg.RobotRadius+c.Cfg.Clearance, c.blocked)
+	path, ok := c.Planner.PlanPathNear(from, target, c.Cfg.RobotRadius+c.Cfg.Clearance, finalTol, c.blocked)
 	if !ok {
 		return ErrUnreachable
 	}
