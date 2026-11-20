@@ -342,6 +342,8 @@ dt{color:var(--text-2)} dd{text-align:right}
           <button data-cmd="max">Max</button>
           <button data-cmd="explore" title="Parcourir le lieu pour faire ou compléter la carte, puis rentrer à la base">Explorer</button>
           <button data-cmd="dock">Retour à la base</button>
+          <button id="goto" title="Cliquer ensuite la destination sur la carte">Aller à un point</button>
+          <button data-cmd="relocalize" title="Retrouver la position du robot sur la carte à partir du lidar">Me localiser</button>
           <button data-cmd="reset_pose">Pose à zéro</button>
           <button data-cmd="reset_map">Effacer la carte</button>
         </div>
@@ -380,8 +382,13 @@ dt{color:var(--text-2)} dd{text-align:right}
           <button data-draw="wall" title="Tracer un mur virtuel">Mur</button>
         </div>
         <p class="hint" id="zone-hint" hidden></p>
+        <button id="rooms" class="wide" title="Découper la carte en pièces aux passages de porte et ajouter chacune comme zone à nettoyer">Proposer les pièces</button>
         <h3 class="sub">Zones de la carte</h3>
         <div id="zone-list"></div>
+        <div class="row2">
+          <select id="zone-passes" title="Nombre de passages sur chaque zone"><option value="1">1 passage</option><option value="2">2 passages</option></select>
+          <button id="zone-go" title="Nettoyer les zones cochées, dans l'ordre où elles ont été cochées">Nettoyer la sélection</button>
+        </div>
         <div class="checks"><label><input type="checkbox" id="zone-dock" checked> Retour à la base à la fin</label></div>
         <p class="hint">Les zones sont enregistrées avec la carte. Le robot n'entre dans une zone interdite et ne franchit un mur virtuel ni en pilotage ni en autonomie, et ses trajets évitent la base (cercle pointillé).</p>
       </div>
@@ -1138,10 +1145,15 @@ function initRobot(){
     try { zones = await (await post('/api/zones', JSON.stringify(list))).json(); renderZones(); }
     catch (e) { toast(e.message); refreshZones(); }
   }
+  let picked = []; // IDs of the zones ticked for a cleaning, in the order ticked
+  const startClean = ids => post('/api/clean?zone=' + ids.join(',') + '&passes=' + $('zone-passes').value + '&dock=' + ($('zone-dock').checked ? 1 : 0)).catch(err => toast(err.message));
   function renderZones(){
+    picked = picked.filter(id => zones.some(z => z.id === id && z.kind === 'clean'));
     $('zone-list').innerHTML = zones.length ? zones.map(z =>
-      `<div class="sched"><span class="zsw" style="background:${ZONE_STYLE[z.kind].stroke}"></span>` +
-      `<span>${z.name} · ${KIND[z.kind]} · ${size(z)}</span>` +
+      `<div class="sched">` +
+      (z.kind === 'clean' ? `<label title="Ajouter à la sélection"><input type="checkbox" data-pick="${z.id}"${picked.includes(z.id) ? ' checked' : ''}>${picked.includes(z.id) ? ' ' + (picked.indexOf(z.id) + 1) : ''}</label>` : '') +
+      `<span class="zsw" style="background:${ZONE_STYLE[z.kind].stroke}"></span>` +
+      `<span data-rename="${z.id}" title="Cliquer pour renommer">${z.name} · ${KIND[z.kind]} · ${size(z)}</span>` +
       (z.kind === 'clean' ? `<button data-clean="${z.id}">Nettoyer</button>` : '') +
       `<button class="ghost" data-delzone="${z.id}" title="Supprimer" aria-label="Supprimer"><svg class="ic"><use href="#i-x"/></svg></button></div>`).join('')
       : '<p class="hint" style="margin:0">Aucune zone sur cette carte.</p>';
@@ -1155,8 +1167,17 @@ function initRobot(){
     refreshSched();
   }
   $('zone-list').addEventListener('click', e => {
-    const c = e.target.dataset.clean, del = e.target.dataset.delzone;
-    if (c) post('/api/clean?zone=' + c + '&dock=' + ($('zone-dock').checked ? 1 : 0)).catch(err => toast(err.message));
+    const c = e.target.dataset.clean, del = e.target.dataset.delzone, ren = e.target.dataset.rename;
+    if (ren){
+      const z = zones.find(x => x.id === ren), name = z && prompt('Nom de la zone :', z.name);
+      if (name) saveZones(zones.map(x => x.id === ren ? {...x, name: name.slice(0, 40)} : x));
+    }
+    const pick = e.target.dataset.pick;
+    if (pick){
+      picked = e.target.checked ? [...picked, pick] : picked.filter(id => id !== pick);
+      renderZones();
+    }
+    if (c) startClean([c]);
     if (del){
       const z = zones.find(x => x.id === del);
       if (z && confirm('Supprimer la zone « ' + z.name + ' » ?')) saveZones(zones.filter(x => x.id !== del));
@@ -1186,6 +1207,13 @@ function initRobot(){
     if (name) saveZones([...zones, {name: name.slice(0, 40), kind, points: pts}]);
   }
   document.querySelectorAll('[data-draw]').forEach(b => b.onclick = () => startDrawing(b.dataset.draw));
+  $('zone-go').onclick = () => picked.length ? startClean(picked) : toast('Cochez d\'abord les zones à nettoyer');
+  // « Aller à un point »: the next click on the map is the destination.
+  let picking = false;
+  $('goto').onclick = () => { picking = true; cv.classList.add('drawing'); toast('Cliquez la destination sur la carte'); };
+  $('rooms').onclick =() => post('/api/rooms').then(r => r.json())
+    .then(d => toast(d.added ? d.added + (d.added > 1 ? ' pièces ajoutées' : ' pièce ajoutée') : 'Aucune nouvelle pièce trouvée sur la carte'))
+    .catch(e => toast(e.message));
   window.addEventListener('keydown', e => {
     if (!drawing) return;
     if (e.key === 'Escape') stopDrawing();
@@ -1193,6 +1221,12 @@ function initRobot(){
     else if (e.key === 'Backspace' && !typing(e)){ e.preventDefault(); drawing.pts.pop(); }
   });
   cv.addEventListener('pointerdown', e => {
+    if (picking){
+      picking = false; cv.classList.remove('drawing');
+      const p = c2w(e);
+      post('/api/goto?x=' + p.x.toFixed(3) + '&y=' + p.y.toFixed(3)).catch(err => toast(err.message));
+      return;
+    }
     if (!drawing) return;
     const p = c2w(e), first = drawing.pts[0];
     // a click near the first point (12 px) closes a polygon
@@ -1208,11 +1242,12 @@ function initRobot(){
     finishDrawing();
   });
   // what = the job in words: a zone cleaning or the exploration
-  const what = j => j.kind === 'explore' ? 'Exploration' : 'Nettoyage de « ' + j.name + ' »';
+  const what = j => j.kind === 'explore' ? 'Exploration' : j.kind === 'goto' ? 'Trajet' : 'Nettoyage de « ' + j.name + ' »';
   const visited = j => (j.visited || 0) + (j.visited > 1 ? ' frontières atteintes' : ' frontière atteinte');
   const JOB_TEXT = {
     idle: () => '',
-    going: j => 'En route vers « ' + j.name + ' »',
+    going: j => j.kind === 'goto' ? 'En route vers le point choisi' : 'En route vers « ' + j.name + ' »',
+    charging: j => 'Recharge sur la base, puis reprise de « ' + j.name + ' » · ' + Math.round(j.progress * 100) + ' %',
     cleaning: j => what(j) + ' · ' + Math.round(j.progress * 100) + ' %',
     exploring: j => 'Exploration en cours · ' + visited(j),
     docking: j => 'Retour à la base' + (j.kind === 'explore' ? ' après l\'exploration · ' + visited(j) : ''),
@@ -1224,7 +1259,7 @@ function initRobot(){
     job = JSON.parse(e.data);
     $('job').hidden = job.state === 'idle';
     $('job-text').textContent = (JOB_TEXT[job.state] || (() => job.state))(job);
-    const running = job.state === 'going' || job.state === 'cleaning' || job.state === 'exploring';
+    const running = /going|cleaning|exploring|charging/.test(job.state);
     $('job-stop').hidden = !running;
     $('job-bar').hidden = job.state !== 'cleaning';
     $('job-fill').style.width = Math.round(job.progress * 100) + '%';

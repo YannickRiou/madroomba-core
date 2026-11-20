@@ -53,6 +53,12 @@ type Config struct {
 	// front first, so the dock sits just in front of the origin.
 	Dock       mapping.Point
 	DockRadius float64 // m, no-go disc around Dock for planned paths, 0 to disable
+	// DockApproach is where the robot drives before the Roomba seeks its
+	// dock by itself: behind the docked robot, facing the dock.
+	DockApproach mapping.Point
+	// DockTime is how long the Roomba may seek its dock on a low battery
+	// before a cleaning job that would go on after the charge gives up.
+	DockTime time.Duration
 
 	ExploreTime   time.Duration // longest exploration
 	FrontierCells int           // smallest frontier worth a visit, in map cells
@@ -70,6 +76,9 @@ func DefaultConfig() Config {
 		Tick:        100 * time.Millisecond,
 		Dock:        mapping.Point{X: 0.25},
 		DockRadius:  0.35,
+		DockTime:    10 * time.Minute,
+		// 50 cm behind the docked robot, which rests at the origin
+		DockApproach: mapping.Point{X: -0.5},
 
 		ExploreTime:   20 * time.Minute,
 		FrontierCells: 6, // 30 cm with 5 cm cells

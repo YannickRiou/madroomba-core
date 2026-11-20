@@ -44,6 +44,10 @@ type app struct {
 
 	mapFilter int32 // 1 = publish the filtered map (atomic)
 
+	// relocReq holds at most one request to find the robot on the map; the
+	// lidar loop serves it with its next scan and answers on the channel.
+	relocReq chan chan error
+
 	stateMu  sync.Mutex // guards the latest readings below
 	lastScan *lidar.Scan
 	lastBatt robot.Battery
@@ -57,12 +61,15 @@ type app struct {
 const (
 	lowBatteryPct     = 15.0
 	batteryRecoverPct = 20.0
+	// resumeBatteryPct is the charge at which a cleaning job that went to
+	// the dock on a low battery goes on.
+	resumeBatteryPct = 80.0
 )
 
 // newApp builds the app from the flags: driver (simulator or Roomba),
 // map, stores in -data-dir, camera and cleaning job runner.
 func newApp() *app {
-	a := &app{srv: server.New(), tracker: &odom.Tracker{}, mapFilter: 1, lastDrive: time.Now()}
+	a := &app{srv: server.New(), tracker: &odom.Tracker{}, mapFilter: 1, lastDrive: time.Now(), relocReq: make(chan chan error, 1)}
 	a.srv.BaseURL = strings.TrimRight(*baseURL, "/")
 	// Set up first so the page console also shows the start-up logs.
 	log.SetOutput(io.MultiWriter(os.Stderr, a.srv))
@@ -95,7 +102,7 @@ func newApp() *app {
 	if err := a.heat.Load(); err != nil {
 		log.Printf("madroombad: heatmap: %v", err)
 	}
-	a.maps = &mapStore{dir: filepath.Join(*dataDir, "maps"), grid: a.grid, tracker: a.tracker, zones: a.zones, heat: a.heat, loaded: a.publishZones}
+	a.maps = &mapStore{dir: filepath.Join(*dataDir, "maps"), grid: a.grid, tracker: a.tracker, zones: a.zones, heat: a.heat, loaded: a.mapLoaded}
 	a.publishZones()
 
 	a.battery = &battery.Recorder{Path: filepath.Join(*dataDir, "battery.csv"), Interval: 30 * time.Second, Keep: 7 * 24 * time.Hour}
@@ -131,6 +138,10 @@ func newApp() *app {
 			return a.driver.Reactivate() // Safe
 		},
 		BatteryLow: a.batteryLow,
+		Charged: func() bool {
+			pct, ok := a.batteryPercent()
+			return ok && pct >= resumeBatteryPct
+		},
 		Event:      a.jobEvent,
 		Publish:    func(s nav.Status) { a.srv.Publish("job", s) },
 	}

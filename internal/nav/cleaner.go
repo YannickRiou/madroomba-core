@@ -21,6 +21,7 @@ const (
 	StateCleaning  = "cleaning"  // sweeping the zone, motors on
 	StateExploring = "exploring" // driving to the frontiers of the map
 	StateDocking   = "docking"   // the Roomba is seeking its dock
+	StateCharging  = "charging"  // on the dock until the battery allows going on
 	StateDone      = "done"
 	StateFailed    = "failed"
 	StateCanceled  = "canceled"
@@ -30,11 +31,12 @@ const (
 const (
 	KindClean   = "clean"
 	KindExplore = "explore"
+	KindGoTo    = "goto"
 )
 
 // Status describes the current or last job.
 type Status struct {
-	Kind     string  `json:"kind,omitempty"` // KindClean or KindExplore
+	Kind     string  `json:"kind,omitempty"` // KindClean, KindExplore or KindGoTo
 	State    string  `json:"state"`
 	Zone     string  `json:"zone,omitempty"`    // zone ID
 	Name     string  `json:"name,omitempty"`    // zone name
@@ -55,8 +57,8 @@ type Area struct {
 	Polygon  geom.Polygon
 }
 
-// Cleaner runs one autonomous job at a time: cleaning a zone, or exploring
-// the place to build or complete the map.
+// Cleaner runs one autonomous job at a time: cleaning zones, driving to a
+// point, or exploring the place to build or complete the map.
 type Cleaner struct {
 	Base    Base
 	Pose    PoseSource
@@ -74,6 +76,10 @@ type Cleaner struct {
 	FullMode func(on bool) error
 	// BatteryLow tells when to stop and go back to the dock.
 	BatteryLow func() bool
+	// Charged, if set, tells when the battery allows a cleaning job that
+	// went to the dock on a low battery to go on. Without it the job ends
+	// at the dock.
+	Charged func() bool
 	// Event signals "start", "done" and "stuck" (melodies).
 	Event func(name string)
 	// Publish is called on every status change and once a second.
@@ -102,9 +108,24 @@ func (c *Cleaner) Running() bool {
 }
 
 // Start launches the cleaning of area. With returnToDock, the robot seeks
-// its dock at the end (or when the battery runs low).
+// its dock at the end.
 func (c *Cleaner) Start(area Area, returnToDock bool) error {
-	return c.launch(func(ctx context.Context) { c.run(ctx, area, returnToDock) })
+	return c.StartAll([]Area{area}, 1, returnToDock)
+}
+
+// StartAll launches the cleaning of the areas, in this order, each swept
+// passes times. On a low battery the robot recharges on its dock, then
+// goes on where it stopped (see Charged).
+func (c *Cleaner) StartAll(areas []Area, passes int, returnToDock bool) error {
+	if len(areas) == 0 || passes < 1 {
+		return errors.New("nothing to clean")
+	}
+	return c.launch(func(ctx context.Context) { c.run(ctx, areas, passes, returnToDock) })
+}
+
+// GoTo launches a drive to target, as close as the map allows.
+func (c *Cleaner) GoTo(target mapping.Point) error {
+	return c.launch(func(ctx context.Context) { c.reach(ctx, target) })
 }
 
 // Explore launches an exploration: the robot drives to the frontiers of
@@ -208,11 +229,11 @@ func (c *Cleaner) begin(ctx context.Context, st Status) error {
 	return nil
 }
 
-func (c *Cleaner) run(ctx context.Context, area Area, returnToDock bool) {
-	st := Status{Kind: KindClean, State: StateGoing, Zone: area.ID, Name: area.Name}
+func (c *Cleaner) run(ctx context.Context, areas []Area, passes int, returnToDock bool) {
+	st := Status{Kind: KindClean, State: StateGoing, Zone: areas[0].ID, Name: areas[0].Name}
 	finish := func(state, msg string) {
 		st.State, st.Message = state, msg
-		log.Printf("madroombad: cleaning %q: %s %s", area.Name, state, msg)
+		log.Printf("madroombad: cleaning %q: %s %s", st.Name, state, msg)
 		c.set(st)
 	}
 	if err := c.begin(ctx, st); err != nil {
@@ -220,44 +241,72 @@ func (c *Cleaner) run(ctx context.Context, area Area, returnToDock bool) {
 		return
 	}
 
-	lanes := Coverage(area.Polygon, c.Cfg.LaneSpacing, c.Cfg.RobotRadius)
-	if len(lanes) == 0 {
-		finish(StateFailed, "zone too narrow for the robot")
-		return
+	lanes := make([][]mapping.Point, len(areas))
+	total := 0
+	for i, area := range areas {
+		lanes[i] = Coverage(area.Polygon, c.Cfg.LaneSpacing, c.Cfg.RobotRadius)
+		if len(lanes[i]) == 0 {
+			st.Zone, st.Name = area.ID, area.Name
+			finish(StateFailed, "zone too narrow for the robot")
+			return
+		}
+		total += passes * len(lanes[i])
 	}
-	skipped := 0
-	for i, wp := range lanes {
-		if c.BatteryLow != nil && c.BatteryLow() {
+	skipped, done := 0, 0
+	for ai, area := range areas {
+		for pass := 0; pass < passes; pass++ {
+			// Brushes off on the way to a zone; they start at its first point.
 			c.Base.SetMotors(robot.Motors{})
-			finish(StateDocking, "battery low")
-			c.Base.Dock()
-			return
+			sweeping := false
+			st.Zone, st.Name, st.State = area.ID, area.Name, StateGoing
+			c.set(st)
+			n := len(lanes[ai])
+			for i := 0; i < n; i++ {
+				if c.BatteryLow != nil && c.BatteryLow() {
+					if !c.recharge(ctx, &st, finish) {
+						return
+					}
+					// Back to the point before, so the lane that was about
+					// to be swept is swept whole.
+					sweeping = false
+					if i > 0 {
+						i--
+						done--
+					}
+				}
+				wp := lanes[ai][i]
+				if pass%2 == 1 { // the robot is at the far end: sweep back
+					wp = lanes[ai][n-1-i]
+				}
+				err := c.goTo(ctx, wp, 0.05)
+				switch {
+				case ctx.Err() != nil:
+					finish(StateCanceled, "")
+					return
+				case errors.Is(err, ErrStuck):
+					c.event("stuck")
+					finish(StateFailed, err.Error())
+					return
+				case err != nil: // bumped, unreachable or too slow: try the next point
+					skipped++
+					log.Printf("madroombad: cleaning %q: waypoint %d skipped: %v", area.Name, i+1, err)
+				}
+				if !sweeping { // reached the zone: start cleaning
+					c.Base.SetMotors(robot.Motors{MainBrush: true, Vacuum: true, SideBrush: true})
+					st.State = StateCleaning
+					sweeping = true
+				}
+				done++
+				st.Progress = float64(done) / float64(total)
+				c.set(st)
+			}
 		}
-		err := c.goTo(ctx, wp, 0.05)
-		switch {
-		case ctx.Err() != nil:
-			finish(StateCanceled, "")
-			return
-		case errors.Is(err, ErrStuck):
-			c.event("stuck")
-			finish(StateFailed, err.Error())
-			return
-		case err != nil: // bumped, unreachable or too slow: try the next point
-			skipped++
-			log.Printf("madroombad: cleaning %q: waypoint %d skipped: %v", area.Name, i+1, err)
-		}
-		if i == 0 { // reached the zone: start cleaning
-			c.Base.SetMotors(robot.Motors{MainBrush: true, Vacuum: true, SideBrush: true})
-			st.State = StateCleaning
-		}
-		st.Progress = float64(i+1) / float64(len(lanes))
-		c.set(st)
 	}
 	c.Base.SetMotors(robot.Motors{})
 	c.event("done")
 	msg := ""
 	if skipped > 0 {
-		msg = fmt.Sprintf("%d of %d points skipped", skipped, len(lanes))
+		msg = fmt.Sprintf("%d of %d points skipped", skipped, total)
 	}
 	if returnToDock {
 		finish(StateDocking, msg)
@@ -265,6 +314,94 @@ func (c *Cleaner) run(ctx context.Context, area Area, returnToDock bool) {
 		return
 	}
 	finish(StateDone, msg)
+}
+
+// recharge sends the robot to its dock on a low battery, waits there until
+// Charged allows going on, then backs out. It returns false, with the job
+// finished, when the job cannot go on.
+func (c *Cleaner) recharge(ctx context.Context, st *Status, finish func(state, msg string)) bool {
+	c.Base.SetMotors(robot.Motors{})
+	finish(StateDocking, "battery low")
+	if c.Charged == nil {
+		c.Base.Dock()
+		return false
+	}
+	// Drive to the dock on the map and leave only the last approach to the
+	// Roomba, which finds its dock by wandering when it starts far from it.
+	// If the way there fails, the Roomba seeks from where it stands.
+	if err := c.goTo(ctx, c.Cfg.DockApproach, 0.10); ctx.Err() != nil {
+		finish(StateCanceled, "")
+		return false
+	} else if err != nil {
+		log.Printf("madroombad: cleaning %q: way to the dock: %v", st.Name, err)
+	}
+	c.Base.Dock()
+	onDock := func() bool {
+		s, err := c.Base.Sensors()
+		return err == nil && s.ChargingSources != 0
+	}
+	if !c.wait(ctx, c.Cfg.DockTime, onDock) {
+		if ctx.Err() != nil {
+			finish(StateCanceled, "")
+		} else {
+			finish(StateFailed, "battery low and dock not reached")
+		}
+		return false
+	}
+	finish(StateCharging, "")
+	if !c.wait(ctx, 0, c.Charged) {
+		finish(StateCanceled, "")
+		return false
+	}
+	st.State, st.Message = StateGoing, ""
+	if err := c.begin(ctx, *st); err != nil {
+		finish(StateFailed, err.Error())
+		return false
+	}
+	return true
+}
+
+// wait polls cond every ten control periods until it holds. It returns
+// false when the job is canceled or, with a limit, when the time is up.
+func (c *Cleaner) wait(ctx context.Context, limit time.Duration, cond func() bool) bool {
+	start := time.Now()
+	for !cond() {
+		if limit > 0 && time.Since(start) > limit {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(10 * c.Cfg.Tick):
+		}
+	}
+	return true
+}
+
+// reach drives to target and stops there.
+func (c *Cleaner) reach(ctx context.Context, target mapping.Point) {
+	st := Status{Kind: KindGoTo, State: StateGoing, Name: "point"}
+	finish := func(state, msg string) {
+		st.State, st.Message = state, msg
+		log.Printf("madroombad: drive to (%.2f, %.2f): %s %s", target.X, target.Y, state, msg)
+		c.set(st)
+	}
+	if err := c.begin(ctx, st); err != nil {
+		finish(StateFailed, err.Error())
+		return
+	}
+	err := c.goTo(ctx, target, c.Cfg.RobotRadius)
+	switch {
+	case ctx.Err() != nil:
+		finish(StateCanceled, "")
+	case err != nil:
+		if errors.Is(err, ErrStuck) {
+			c.event("stuck")
+		}
+		finish(StateFailed, err.Error())
+	default:
+		finish(StateDone, "")
+	}
 }
 
 // explore drives to the nearest frontier of the map, again and again,

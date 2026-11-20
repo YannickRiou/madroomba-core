@@ -155,6 +155,18 @@ func (a *app) command(action string) error {
 	case "reset_pose":
 		a.tracker.Reset()
 		return nil
+	case "relocalize":
+		a.setLidar(true, false)
+		reply := a.relocate()
+		if reply == nil {
+			return errors.New("a search is already waiting for a lidar scan")
+		}
+		select {
+		case err := <-reply:
+			return err
+		case <-time.After(10 * time.Second):
+			return errors.New("no lidar scan in 10 s: the search will run on the next one")
+		}
 	case "restart":
 		// Stop the wheels, let the HTTP reply go out, then exit non-zero so
 		// that systemd (Restart=on-failure) starts a fresh daemon.

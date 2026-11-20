@@ -2,6 +2,7 @@ package nav
 
 import (
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -231,5 +232,118 @@ func TestCleanerStop(t *testing.T) {
 	case <-ended:
 	case <-time.After(5 * time.Second):
 		t.Fatal("not canceled")
+	}
+}
+
+// ended collects the final status of a job.
+func ended(done chan Status) func(Status) {
+	return func(s Status) {
+		if s.State == StateDone || s.State == StateFailed || s.State == StateCanceled {
+			done <- s
+		}
+	}
+}
+
+func TestGoToReachesThePoint(t *testing.T) {
+	b := newSimBase()
+	defer close(b.stop)
+	cfg := DefaultConfig()
+	cfg.Tick = 10 * time.Millisecond
+	done := make(chan Status, 1)
+	c := &Cleaner{Base: b, Pose: b, Planner: mapping.NewGrid(200, 200, 0.05), Cfg: cfg, Publish: ended(done)}
+	target := mapping.Point{X: -1.5, Y: -1}
+	if err := c.GoTo(target); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case s := <-done:
+		if s.State != StateDone || s.Kind != KindGoTo {
+			t.Fatalf("job ended %+v", s)
+		}
+	case <-time.After(20 * time.Second):
+		c.Stop()
+		t.Fatal("job did not finish")
+	}
+	if p := b.TruePose(); math.Hypot(p.X-target.X, p.Y-target.Y) > cfg.RobotRadius+0.05 {
+		t.Errorf("stopped at (%.2f, %.2f), want near %v", p.X, p.Y, target)
+	}
+}
+
+func TestCleanerZonesPassesAndRecharge(t *testing.T) {
+	b := newSimBase()
+	defer close(b.stop)
+	// just above low at the start, so it runs low in the first zone,
+	// and a dock that charges in a few seconds
+	b.SetBattery(440, 5000, 200000)
+	pct := func() float64 {
+		bat, _ := b.Battery()
+		return 100 * float64(bat.ChargeMAh) / float64(bat.CapacityMAh)
+	}
+	cfg := DefaultConfig()
+	cfg.Tick = 10 * time.Millisecond
+	done := make(chan Status, 1)
+	var mu sync.Mutex
+	var states, zones []string
+	c := &Cleaner{
+		Base: b, Pose: b, Planner: mapping.NewGrid(200, 200, 0.05), Cfg: cfg,
+		BatteryLow: func() bool { return pct() < 15 },
+		Charged:    func() bool { return pct() >= 80 },
+		Publish: func(s Status) {
+			mu.Lock()
+			if n := len(states); n == 0 || states[n-1] != s.State {
+				states = append(states, s.State)
+			}
+			if n := len(zones); n == 0 || zones[n-1] != s.Zone {
+				zones = append(zones, s.Zone)
+			}
+			mu.Unlock()
+			ended(done)(s)
+		},
+	}
+	areas := []Area{
+		{ID: "a", Name: "first", Polygon: geom.Rect(-1.5, -0.6, -0.5, 0.2)},
+		{ID: "b", Name: "second", Polygon: geom.Rect(-1.5, 0.4, -0.5, 1.2)},
+	}
+	if err := c.StartAll(areas, 2, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case s := <-done:
+		if s.State != StateDone || s.Progress != 1 || s.Message != "" {
+			t.Fatalf("job ended %+v", s)
+		}
+	case <-time.After(60 * time.Second):
+		c.Stop()
+		t.Fatal("job did not finish")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(zones, " "); got != "a b" {
+		t.Errorf("zones cleaned in order %q, want \"a b\"", got)
+	}
+	got := strings.Join(states, " ")
+	if !strings.Contains(got, "docking charging going cleaning") {
+		t.Errorf("states %q: no recharge in the middle of the job", got)
+	}
+	// every lane end of both zones passed twice, once per pass; the robot
+	// turns back on the last one without leaving it
+	b.mu.Lock()
+	trace := append([]odom.Pose{}, b.trace...)
+	b.mu.Unlock()
+	for _, area := range areas {
+		lanes := Coverage(area.Polygon, cfg.LaneSpacing, cfg.RobotRadius)
+		for _, wp := range lanes[:len(lanes)-1] {
+			visits, near := 0, false
+			for _, p := range trace {
+				in := math.Hypot(p.X-wp.X, p.Y-wp.Y) < 0.08
+				if in && !near {
+					visits++
+				}
+				near = in
+			}
+			if visits < 2 {
+				t.Errorf("zone %s: waypoint %v passed %d times, want 2", area.ID, wp, visits)
+			}
+		}
 	}
 }

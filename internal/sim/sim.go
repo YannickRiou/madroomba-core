@@ -93,17 +93,36 @@ type Robot struct {
 	accDistM   float64
 	accThetaRd float64
 
+	bumped bool // the last forward step ran into a wall
+	docked  bool // resting on the dock, at the origin
+	seeking bool // driving itself to the dock
+
+	chargeMAh float64
+	drainMA   float64 // drawn off the dock; 0 keeps the charge fixed
+	chargeMA  float64 // taken in on the dock
+
 	rng *rand.Rand
 }
 
 const (
 	wheelBaseM  = 0.298 // Roomba 500 wheel separation
 	robotRadius = 0.17
+	capacityMAh = 2696
+	// dockReachM is how far from its dock the simulated Roomba finds it.
+	dockReachM = 1.0
 )
 
 // NewRobot places a simulated robot at the origin of the given world.
 func NewRobot(w *World) *Robot {
-	return &Robot{world: w, rng: rand.New(rand.NewSource(time.Now().UnixNano()))}
+	return &Robot{world: w, rng: rand.New(rand.NewSource(time.Now().UnixNano())), chargeMAh: 2100, chargeMA: 1500}
+}
+
+// SetBattery sets the charge and how fast it goes down off the dock and up
+// on it, in mA. By default the charge only moves on the dock.
+func (r *Robot) SetBattery(chargeMAh, drainMA, chargeMA float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.chargeMAh, r.drainMA, r.chargeMA = chargeMAh, drainMA, chargeMA
 }
 
 // Step advances the simulation by dt.
@@ -111,6 +130,9 @@ func (r *Robot) Step(dt time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := dt.Seconds()
+	if r.seeking {
+		r.seekDock()
+	}
 	v := (r.vl + r.vr) / 2
 	w := (r.vr - r.vl) / wheelBaseM
 
@@ -118,14 +140,22 @@ func (r *Robot) Step(dt time.Duration) {
 	nx := r.pose.X + v*s*math.Cos(mid)
 	ny := r.pose.Y + v*s*math.Sin(mid)
 
-	// Collision: block translation if the bumper would cross a wall.
+	// Collision: block translation if the bumper would cross a wall. Like
+	// the Roomba, only a forward hit presses the bumper.
+	r.bumped = false
 	if v != 0 {
 		heading := math.Atan2(ny-r.pose.Y, nx-r.pose.X)
 		d := r.world.Raycast(r.pose.X, r.pose.Y, heading, robotRadius+math.Abs(v*s))
 		if d != 0 && d <= robotRadius {
 			nx, ny = r.pose.X, r.pose.Y
+			r.bumped = v > 0
 			v = 0
 		}
+	}
+	if r.docked {
+		r.chargeMAh = math.Min(capacityMAh, r.chargeMAh+r.chargeMA*s/3600)
+	} else {
+		r.chargeMAh = math.Max(0, r.chargeMAh-r.drainMA*s/3600)
 	}
 
 	r.pose.X, r.pose.Y = nx, ny
@@ -134,6 +164,27 @@ func (r *Robot) Step(dt time.Duration) {
 	// Odometry with slight noise, as the real encoders would report.
 	r.accDistM += v * s * (1 + r.rng.NormFloat64()*0.01)
 	r.accThetaRd += w * s * (1 + r.rng.NormFloat64()*0.02)
+}
+
+// seekDock steers toward the origin, then turns to face the dock (+X) and
+// rests there.
+func (r *Robot) seekDock() {
+	turn := func(err float64) {
+		w := math.Copysign(math.Min(1, math.Abs(err)*3), err) * wheelBaseM / 2
+		r.vl, r.vr = -w, w
+	}
+	dist := math.Hypot(r.pose.X, r.pose.Y)
+	switch err := odom.NormalizeAngle(math.Atan2(-r.pose.Y, -r.pose.X) - r.pose.Theta); {
+	case dist > 0.03 && math.Abs(err) > 0.1:
+		turn(err)
+	case dist > 0.03:
+		r.vl, r.vr = 0.15, 0.15
+	case math.Abs(r.pose.Theta) > 0.03:
+		turn(-r.pose.Theta)
+	default:
+		r.vl, r.vr = 0, 0
+		r.seeking, r.docked = false, true
+	}
 }
 
 // TruePose returns the ground-truth pose (for debugging).
@@ -174,6 +225,10 @@ func (r *Robot) SetWheels(leftMM, rightMM int16) error {
 	defer r.mu.Unlock()
 	r.vl = float64(leftMM) / 1000
 	r.vr = float64(rightMM) / 1000
+	r.seeking = false
+	if leftMM != 0 || rightMM != 0 {
+		r.docked = false
+	}
 	return nil
 }
 
@@ -190,27 +245,49 @@ func (r *Robot) Odometry() (float64, float64, error) {
 	return d, a, nil
 }
 
-// Battery reports a fixed, partly charged battery.
+// Battery reports the simulated charge: going up on the dock, down off it
+// when SetBattery gave a drain.
 func (r *Robot) Battery() (robot.Battery, error) {
-	return robot.Battery{
-		ChargeMAh:   2100,
-		CapacityMAh: 2696,
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b := robot.Battery{
+		ChargeMAh:   uint16(r.chargeMAh),
+		CapacityMAh: capacityMAh,
 		VoltageMV:   16200,
 		CurrentMA:   -350,
 		TempC:       28,
-		Charging:    0,
-	}, nil
+	}
+	if r.docked {
+		b.CurrentMA, b.Charging = int16(math.Min(r.chargeMA, 30000)), 2
+	}
+	return b, nil
 }
 
-// Sensors reports a robot in Safe mode with nothing triggered.
+// Sensors reports a robot in Safe mode, its bumper pressed while it pushes
+// against a wall, and the home base while it rests on its dock.
 func (r *Robot) Sensors() (robot.Sensors, error) {
-	return robot.Sensors{OIMode: 2}, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := robot.Sensors{OIMode: 2, BumpLeft: r.bumped, BumpRight: r.bumped}
+	if r.docked {
+		s.ChargingSources = 2
+	}
+	return s, nil
+}
+
+// Dock sends the robot to its dock, at the origin, when it is within
+// dockReachM of it. Further away the simulated Roomba does not find it.
+func (r *Robot) Dock() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.vl, r.vr = 0, 0
+	r.seeking = !r.docked && math.Hypot(r.pose.X, r.pose.Y) <= dockReachM
+	return nil
 }
 
 // The commands below have no effect in the simulator.
 
 func (r *Robot) Clean() error                 { return nil }
-func (r *Robot) Dock() error                  { return nil }
 func (r *Robot) Reactivate() error            { return nil }
 func (r *Robot) SetMotors(robot.Motors) error { return nil }
 func (r *Robot) SetLEDs(robot.LEDs) error     { return nil }

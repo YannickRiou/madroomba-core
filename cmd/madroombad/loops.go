@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"math"
 	"time"
 
 	"github.com/YannickRiou/madroomba-core/internal/lidar"
+	"github.com/YannickRiou/madroomba-core/internal/odom"
 	"github.com/YannickRiou/madroomba-core/internal/robot"
 )
 
@@ -168,6 +171,14 @@ func (a *app) lidarLoop() {
 		}
 		scan := normalizeScan(raw, *lidarYawDeg, *lidarInvert && !*simMode)
 		pose := a.tracker.Pose()
+		select {
+		case reply := <-a.relocReq:
+			// Before anything else: a scan integrated at a wrong pose
+			// damages the map.
+			reply <- a.relocalize(scan, pose)
+			pose = a.tracker.Pose()
+		default:
+		}
 		if *scanMatch {
 			if corrected := a.grid.ScanMatch(pose, scan); corrected != pose {
 				a.tracker.Set(corrected)
@@ -178,6 +189,60 @@ func (a *app) lidarLoop() {
 		a.stateMu.Lock()
 		a.lastScan = scan
 		a.stateMu.Unlock()
+	}
+}
+
+// relocate asks the lidar loop to find the robot on the map with its next
+// scan. It returns the channel of the outcome, or nil when a request is
+// already waiting.
+func (a *app) relocate() chan error {
+	reply := make(chan error, 1)
+	select {
+	case a.relocReq <- reply:
+		return reply
+	default:
+		return nil
+	}
+}
+
+// relocalize searches the whole map for the pose that explains scan, taken
+// at the odometry pose at, and moves the tracker there. The pose is left
+// alone when the search finds nothing or cannot choose between two places.
+func (a *app) relocalize(scan *lidar.Scan, at odom.Pose) error {
+	loc, ok := a.grid.Relocalize(scan)
+	switch {
+	case !ok && loc.Second > 0:
+		return fmt.Errorf("position ambiguous (two places explain %.0f %% and %.0f %% of the scan): move the robot and try again", 100*loc.Score, 100*loc.Second)
+	case !ok:
+		return errors.New("position not found: the scan matches no place of the map")
+	}
+	// The robot may have moved during the search: replay that move from
+	// the pose found.
+	now := a.tracker.Pose()
+	rot := loc.Pose.Theta - at.Theta
+	c, s := math.Cos(rot), math.Sin(rot)
+	dx, dy := now.X-at.X, now.Y-at.Y
+	a.tracker.Set(odom.Pose{
+		X:     loc.Pose.X + c*dx - s*dy,
+		Y:     loc.Pose.Y + s*dx + c*dy,
+		Theta: odom.NormalizeAngle(now.Theta + rot),
+	})
+	log.Printf("madroombad: robot found on the map at (%.2f, %.2f) m, %.0f°, %.0f %% of the scan explained",
+		loc.Pose.X, loc.Pose.Y, loc.Pose.Theta*180/math.Pi, 100*loc.Score)
+	return nil
+}
+
+// mapLoaded runs after a saved map replaced the live one. The pose is at
+// the map origin, right for a robot on its dock; the next scan tells
+// whether it is somewhere else.
+func (a *app) mapLoaded() {
+	a.publishZones()
+	if reply := a.relocate(); reply != nil {
+		go func() {
+			if err := <-reply; err != nil {
+				log.Printf("madroombad: map loaded, robot taken to be at its origin: %v", err)
+			}
+		}()
 	}
 }
 

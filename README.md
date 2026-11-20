@@ -59,8 +59,10 @@ go run ./cmd/madroombad -sim -data-dir ./simdata
 
 The simulator runs an 8 by 6 m flat with a partition and furniture. Odometry
 is deliberately noisy so that the scan matcher has something to correct.
-Zones, cleaning jobs and the schedule all work in simulation; the battery
-stays at a fixed level.
+Zones, cleaning jobs and the schedule all work in simulation. The bumper is
+pressed when the robot pushes against a wall, and the dock, at the start
+point, is found from up to 1 m away. The battery charges on the dock and
+otherwise stays at its level (the tests make it run down).
 
 ## The web page
 

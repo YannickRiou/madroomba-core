@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/YannickRiou/madroomba-core/internal/lidar"
+	"github.com/YannickRiou/madroomba-core/internal/nav"
 )
 
 // ecoIdle is how long the robot must rest on its dock, in Passive mode,
@@ -105,7 +106,8 @@ func (a *app) ecoLoop() {
 			continue
 		}
 		idle, busy := a.auto.idle()
-		busy = busy || a.cleaner.Running()
+		// a job waiting for the battery on the dock needs no lidar
+		busy = busy || (a.cleaner.Running() && a.cleaner.Status().State != nav.StateCharging)
 		on, ecoOff := a.lidar.state()
 		switch ecoDecision(on, ecoOff, s.OIMode, s.ChargingSources != 0, idle, busy) {
 		case "off":

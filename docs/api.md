@@ -65,6 +65,7 @@ daemon takes control first.
 | `lidar_on`, `lidar_off` | Start or stop the lidar motor and laser |
 | `eco_on`, `eco_off` | Energy saving on the dock on or off |
 | `reset_map`, `reset_pose` | Clear the map, or put the pose back at the origin |
+| `relocalize` | Switch the lidar on and search the whole map for the pose that explains the next scan. An error says the position was not found or is ambiguous (two places explain the scan about as well); the pose is then left alone |
 | `map_filter_on`, `map_filter_off` | Publish the filtered map (confident cells only, isolated obstacles dropped) or the raw one |
 | `restart` | Stop the wheels and exit with code 1, so systemd (`Restart=on-failure`) starts the daemon again after about 5 s |
 
@@ -94,7 +95,7 @@ robot back to its dock. A cleaning job handles its own return.
 |---|---|
 | `GET /api/maps` | Saved map names, JSON array |
 | `POST /api/maps/save?name=<name>` | Save the filtered map as `<name>.png` + `<name>.yaml` (ROS map_server format), the current zones as `<name>.zones.json` and the heatmap as `<name>.heat.json`, in `<data-dir>/maps`. Names: 1 to 40 letters, digits, `-` or `_` |
-| `POST /api/maps/load?name=<name>` | Replace the live map, the zones and the heatmap with a saved map and reset the pose to the map origin (the dock). `404` if it does not exist |
+| `POST /api/maps/load?name=<name>` | Replace the live map, the zones and the heatmap with a saved map and reset the pose to the map origin (the dock). The next lidar scan then looks for the robot on the map and moves the pose there if it is somewhere else; when the search is not sure, the pose stays at the origin. `404` if it does not exist |
 | `POST /api/maps/delete?name=<name>` | Delete a saved map, its zones and its heatmap |
 | `GET /maps/<name>.png`, `GET /maps/<name>.yaml` | Download a saved map file |
 | `GET /api/map.png` | The live map, filtered or not as published |
@@ -105,7 +106,10 @@ robot back to its dock. A cleaning job handles its own return.
 |---|---|
 | `GET /api/zones` | The zones of the current map, JSON array |
 | `POST /api/zones` | Replace them all (JSON array). Returns the validated list, with IDs given to new zones. `400` with the reason on an invalid zone |
+| `POST /api/rooms` | Split the map into rooms at openings narrower than 1 m and add each one as a zone to clean named « Pièce N ». A room whose centre already lies in a zone to clean is skipped. Returns `{"added": n}` |
 | `POST /api/clean?zone=<id>&dock=1` | Clean a zone, then seek the dock (`dock=0` to stay). `409` if a job runs or the zone is not a zone to clean |
+| `POST /api/clean?zone=<id>,<id>&passes=2&dock=1` | Clean several zones in this order, each swept `passes` times (1 or 2; the second pass sweeps back). On a low battery the robot goes to its dock, charges to 80 %, then goes on where it stopped (job state `charging`) |
+| `POST /api/goto?x=<m>&y=<m>` | Drive to a point of the map (job kind `goto`). `409` if a job runs |
 | `POST /api/explore?dock=1` | Explore the place, then seek the dock (`dock=0` to stay). `409` if a job runs |
 | `POST /api/clean/stop` | Stop the running job, cleaning or exploration |
 
@@ -124,7 +128,7 @@ format (`x0`, `y0`, `x1`, `y1` rectangles) are still accepted and converted.
 The `job` event is `{"kind" ("clean" or "explore"), "state", "zone", "name",
 "progress" (0 to 1, cleaning), "visited" (frontiers reached, exploration),
 "message"}`. States: `idle`, `going` (driving to the zone), `cleaning`
-(sweeping, motors on), `exploring`, `docking`, `done`, `failed`, `canceled`. A job plans
+(sweeping, motors on), `exploring`, `docking`, `charging`, `done`, `failed`, `canceled`. A job plans
 paths around mapped obstacles, no-go zones, virtual walls and the dock,
 sweeps the zone in parallel lanes 25 cm apart, backs off and skips a point
 on a bumper hit, and stops on a cliff or a wheel drop.
