@@ -1,8 +1,10 @@
 package camera
 
 import (
+	"io"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 func TestGridDistanceIgnoresGlobalBrightness(t *testing.T) {
@@ -27,15 +29,19 @@ func TestGridDistanceIgnoresGlobalBrightness(t *testing.T) {
 func TestReadLoopSplitsFrames(t *testing.T) {
 	f1 := "\xff\xd8AAA\xff\xd9"
 	f2 := "\xff\xd8BBBB\xff\xd9"
-	s := &Streamer{subs: make(map[chan []byte]struct{}), done: make(chan struct{})}
-	s.readLoop(strings.NewReader("junk" + f1 + "xx" + f2))
-	if got := string(s.Latest()); got != f2 {
-		t.Fatalf("latest frame = %q, want the second frame %q", got, f2)
-	}
-	select {
-	case <-s.done:
-	default:
-		t.Fatal("done must be closed when the stream ends")
+	in := "junkÿ" + f1 + "xx" + f2
+	// one byte per read puts every marker across two reads
+	for _, r := range []io.Reader{strings.NewReader(in), iotest.OneByteReader(strings.NewReader(in))} {
+		s := &Streamer{subs: make(map[chan []byte]struct{}), done: make(chan struct{})}
+		s.readLoop(r)
+		if got := string(s.Latest()); got != f2 {
+			t.Fatalf("latest frame = %q, want the second frame %q", got, f2)
+		}
+		select {
+		case <-s.done:
+		default:
+			t.Fatal("done must be closed when the stream ends")
+		}
 	}
 }
 

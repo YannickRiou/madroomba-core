@@ -4,7 +4,6 @@
 package camera
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"image"
@@ -105,32 +104,51 @@ func StartWithArgs(command []string, width, height, fps int, extra []string) (*S
 }
 
 // readLoop splits the raw MJPEG byte stream into JPEG frames
-// (0xFFD8 ... 0xFFD9) and fans them out.
+// (0xFFD8 ... 0xFFD9) and fans them out. It jumps from one 0xFF byte to the
+// next (bytes.IndexByte) rather than looking at every byte, which a Pi Zero
+// notices at 10 frames per second.
 func (s *Streamer) readLoop(r io.Reader) {
 	defer close(s.done)
-	br := bufio.NewReaderSize(r, 1<<16)
+	buf := make([]byte, 1<<16)
 	var frame []byte
 	inFrame := false
 	prev := byte(0)
 	for {
-		b, err := br.ReadByte()
+		n, err := r.Read(buf)
+		chunk := buf[:n]
+		for len(chunk) > 0 {
+			i := 0 // index of the byte following a 0xFF
+			if prev != 0xFF {
+				j := bytes.IndexByte(chunk, 0xFF)
+				if j < 0 || j == len(chunk)-1 {
+					if inFrame {
+						frame = append(frame, chunk...)
+					}
+					prev = chunk[len(chunk)-1]
+					break
+				}
+				i = j + 1
+			}
+			b := chunk[i]
+			if !inFrame {
+				if b == 0xD8 {
+					inFrame = true
+					frame = append(frame[:0], 0xFF, 0xD8)
+				}
+			} else {
+				frame = append(frame, chunk[:i+1]...)
+				if b == 0xD9 {
+					s.publish(append([]byte(nil), frame...))
+					inFrame = false
+				}
+			}
+			prev = b
+			chunk = chunk[i+1:]
+		}
 		if err != nil {
 			log.Printf("camera: stream ended: %v", err)
 			return
 		}
-		if !inFrame {
-			if prev == 0xFF && b == 0xD8 {
-				inFrame = true
-				frame = append(frame[:0], 0xFF, 0xD8)
-			}
-		} else {
-			frame = append(frame, b)
-			if prev == 0xFF && b == 0xD9 {
-				s.publish(append([]byte(nil), frame...))
-				inFrame = false
-			}
-		}
-		prev = b
 	}
 }
 
@@ -212,17 +230,22 @@ const motionGridW, motionGridH = 32, 24
 
 // Feed analyses a JPEG frame; returns true if motion was detected.
 func (m *MotionDetector) Feed(frame []byte) (bool, error) {
-	img, err := jpeg.Decode(bytes.NewReader(frame))
+	cur, err := GrayGrid(frame)
 	if err != nil {
 		return false, err
 	}
-	cur := downscaleGray(img)
+	return m.FeedGrid(cur), nil
+}
 
+// FeedGrid is Feed for a frame already turned into a grid (GrayGrid): a
+// JPEG decode takes over 100 ms on a Pi Zero, so callers that also need the
+// grid decode only once.
+func (m *MotionDetector) FeedGrid(cur []float64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.prev == nil {
 		m.prev = cur
-		return false, nil
+		return false
 	}
 	var sum float64
 	for i := range cur {
@@ -236,9 +259,9 @@ func (m *MotionDetector) Feed(frame []byte) (bool, error) {
 	m.Score = sum / float64(len(cur))
 	if m.Score >= m.Threshold {
 		m.LastMotion = time.Now()
-		return true, nil
+		return true
 	}
-	return false, nil
+	return false
 }
 
 // Reset forgets the previous frame and the last motion time.

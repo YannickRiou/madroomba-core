@@ -38,7 +38,7 @@ var (
 const (
 	snapCooldown = 15 * time.Second // min delay between automatic motion snapshots
 	camWarmup    = 6 * time.Second  // motion/dock analysis paused after a camera (re)start
-	analysisTick = 400 * time.Millisecond
+	analysisTick = time.Second      // one JPEG decode (over 100 ms on a Pi Zero) per tick
 )
 
 // app holds the daemon state. mu protects everything below it.
@@ -123,7 +123,11 @@ func (a *app) analyse(det *camera.MotionDetector) {
 			wasMotion = false
 			continue
 		}
-		motion, _ := det.Feed(f)
+		g, err := camera.GrayGrid(f) // one JPEG decode for both analyses
+		if err != nil {
+			continue
+		}
+		motion := det.FeedGrid(g)
 		if motion && !wasMotion && time.Since(lastSnap) > snapCooldown {
 			lastSnap = time.Now()
 			if name, err := a.snaps.save(f, "motion"); err == nil {
@@ -131,10 +135,7 @@ func (a *app) analyse(det *camera.MotionDetector) {
 			}
 		}
 		wasMotion = motion
-
-		if g, err := camera.GrayGrid(f); err == nil {
-			a.observeDock(g)
-		}
+		a.observeDock(g)
 	}
 }
 
